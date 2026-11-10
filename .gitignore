@@ -1,0 +1,11 @@
+# Build output
+build/
+*.apk
+*.idsig
+
+# Signing keys must never be committed
+*.keystore
+*.jks
+
+# macOS
+.DS_Store
