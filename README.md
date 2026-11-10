@@ -200,7 +200,37 @@ export ZIG=/path/to/zig
 ./build.sh
 ```
 
-首次编译会自动生成签名用的 `release.keystore`，编译结果为 `StarDash.apk`。
+首次编译会自动生成签名用的 `release.keystore`，编译结果为 `StarDash.apk`。签名密码默认是 `stardashpass`，可以用环境变量 `STARDASH_KEYSTORE_PASS` 自定义。`release.keystore` 已被 `.gitignore` 排除，请不要提交到仓库。
+
+## 项目结构
+
+```
+├── AndroidManifest.xml
+├── build.sh                    编译脚本（不使用 Gradle）
+├── native/dash.c               画面缩放、信息栏合成、画面变动检测、悬浮画面映射（ARM NEON）
+├── res/                        App 名称与图标
+├── stubs/                      车机系统接口的编译占位类，运行时使用车机自带的实现，不会打包进 App
+└── src/com/sgmwstarlight/stardash/
+    ├── AvmSource.java          只读订阅原车 360 共享画面
+    ├── Recorder.java           取流、硬件编码、分段与停车监控状态机
+    ├── Mp4Writer.java          MP4 封装与断电修复
+    ├── Storage.java            录像目录、循环覆盖与锁定
+    ├── VehicleState.java       车辆状态读取（只读）
+    ├── InfoBar.java            车辆状态信息栏绘制
+    ├── MirrorController.java   悬浮画面规则与显示
+    ├── StatusIconOverlay.java  状态栏录像图标
+    ├── WallpaperMode.java      读取壁纸深浅模式，让图标颜色与状态栏一致
+    ├── ForegroundApp.java      判断当前前台应用
+    ├── DvrStatusBar.java       向系统状态栏报告录制状态
+    ├── RecorderService.java    前台服务，串联以上各部分
+    ├── BootReceiver.java       开机与唤醒后自动启动
+    ├── MainActivity.java       录像 / 回放 / 设置界面
+    ├── PlayerActivity.java     录像播放器
+    ├── Thumbs.java             回放缩略图
+    ├── Config.java             设置项
+    ├── Native.java             native 方法声明
+    └── Ui.java                 界面样式
+```
 
 ## 免责声明
 

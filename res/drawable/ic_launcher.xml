@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <!-- Dark rounded tile -->
+    <path
+        android:fillColor="#151A21"
+        android:pathData="M22,4h52a18,18 0,0 1,18 18v52a18,18 0,0 1,-18 18h-52a18,18 0,0 1,-18 -18v-52a18,18 0,0 1,18 -18z" />
+    <!-- Four camera panes -->
+    <path android:fillColor="#2A3340" android:pathData="M20,24h26v20h-26z" />
+    <path android:fillColor="#2A3340" android:pathData="M50,24h26v20h-26z" />
+    <path android:fillColor="#2A3340" android:pathData="M20,48h26v20h-26z" />
+    <path android:fillColor="#2A3340" android:pathData="M50,48h26v20h-26z" />
+    <!-- Status strip -->
+    <path android:fillColor="#3DDC97" android:pathData="M20,72h56v4h-56z" />
+    <!-- Recording dot -->
+    <path
+        android:fillColor="#FF4D4F"
+        android:pathData="M48,46m-9,0a9,9 0,1 1,18 0a9,9 0,1 1,-18 0" />
+</vector>
