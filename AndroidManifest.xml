@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.sgmwstarlight.stardash"
     android:versionCode="1"
-    android:versionName="0.1">
+    android:versionName="0.1.0">
 
     <!-- targetSdk 25 on purpose: TYPE_SYSTEM_ALERT windows sit above the SystemUI dock on this
          head unit, legacy storage lets us write /storage/emulated/0/StarDash, and the service may be

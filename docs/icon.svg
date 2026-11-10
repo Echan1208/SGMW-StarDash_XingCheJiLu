@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <!-- Same artwork as res/drawable/ic_launcher.xml -->
+  <path fill="#151A21" d="M22,4h52a18,18 0,0 1,18 18v52a18,18 0,0 1,-18 18h-52a18,18 0,0 1,-18 -18v-52a18,18 0,0 1,18 -18z"/>
+  <path fill="#2A3340" d="M20,24h26v20h-26z"/>
+  <path fill="#2A3340" d="M50,24h26v20h-26z"/>
+  <path fill="#2A3340" d="M20,48h26v20h-26z"/>
+  <path fill="#2A3340" d="M50,48h26v20h-26z"/>
+  <path fill="#3DDC97" d="M20,72h56v4h-56z"/>
+  <circle fill="#FF4D4F" cx="48" cy="46" r="9"/>
+</svg>

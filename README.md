@@ -1,4 +1,4 @@
-# 行车记录（StarDash）
+# <img src="docs/icon.svg" width="48" alt="App 图标"> 行车记录（StarDash）
 
 **2025 款上汽通用五菱星光**车机的一个第三方行车记录仪 App：直接利用原车 360 全景影像的四路摄像头，在车机上持续录像，每分钟保存一段 MP4。
 
@@ -104,6 +104,8 @@
 > 开启车机 ADB 调试的方法因车机版本而异，本项目不提供说明。
 
 ### 步骤
+
+先在 [Releases](https://github.com/Echan1208/SGMW-StarDash_XingCheJiLu/releases/latest) 页面下载最新的 `StarDash.apk`，然后：
 
 ```bash
 # 1. 无线连接车机（IP 和端口按你的实际情况替换）
