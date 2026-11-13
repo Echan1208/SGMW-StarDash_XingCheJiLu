@@ -32,6 +32,8 @@ import java.util.Locale;
 public final class MainActivity extends Activity {
     private static final boolean SHOW_SIGNALS = false;
     private boolean carWarningShown;
+    /** The system permission dialog is offered once per launch, then the home page card takes over. */
+    private boolean permissionsAsked;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private FrameLayout content;
     private final TextView[] nav = new TextView[SHOW_SIGNALS ? 4 : 3];
@@ -79,6 +81,10 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (!permissionsAsked) {
+            permissionsAsked = true;
+            askPermissions();
+        }
         if (page >= 0) {
             int p = page;
             page = -1;
@@ -92,6 +98,21 @@ public final class MainActivity extends Activity {
         stopTicker();
         Recorder r = recorder();
         if (r != null) r.previewWanted = false;
+    }
+
+    private void askPermissions() {
+        String[] ask = Permissions.runtime(Permissions.missing(this));
+        if (ask.length > 0) requestPermissions(ask, 1);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
+        // Rebuild the current page so the permission card reflects the answer. The recorder retries
+        // opening a file at every keyframe, so a storage grant takes effect without a restart.
+        if (page == 0) {
+            page = -1;
+            show(0);
+        }
     }
 
     private Recorder recorder() {
@@ -186,6 +207,14 @@ public final class MainActivity extends Activity {
         hint.setGravity(Gravity.CENTER);
         right.addView(hint, Ui.margins(Ui.lp(-1, -2), 0, 8, 0, 0));
 
+        LinearLayout perms = new LinearLayout(this);
+        perms.setOrientation(LinearLayout.VERTICAL);
+        perms.setBackground(Ui.round(Color.argb(40, 255, 184, 0), 14));
+        perms.setPadding(22, 16, 22, 16);
+        right.addView(perms, Ui.margins(Ui.lp(-1, -2), 0, 20, 0, 0));
+        String[] permsShown = {null};
+        fillPermissionCard(perms, permsShown);
+
         // Other head units: warn once per app launch, for 10 seconds.
         if (!carWarningShown) {
             carWarningShown = true;
@@ -203,7 +232,10 @@ public final class MainActivity extends Activity {
                 });
             }).start();
         }
-        row.addView(right, Ui.margins(Ui.lp(0, -2, 1), 28, 0, 0, 0));
+        // Scrolls only when the permission card makes the column taller than the screen.
+        ScrollView rightScroll = new ScrollView(this);
+        rightScroll.addView(right);
+        row.addView(rightScroll, Ui.margins(Ui.lp(0, -1, 1), 28, 0, 0, 0));
 
         toggle.setOnClickListener(v -> {
             RecorderService s = RecorderService.instance;
@@ -219,7 +251,10 @@ public final class MainActivity extends Activity {
         });
 
         long[] version = {-1};
+        int[] ticks = {0};
         tick(() -> {
+            // Grants made over adb do not resume the activity, so recheck every 5 seconds.
+            if (++ticks[0] % 10 == 0) fillPermissionCard(perms, permsShown);
             RecorderService s = RecorderService.instance;
             if (s == null) {
                 state.setText("服务启动中…");
@@ -232,12 +267,15 @@ public final class MainActivity extends Activity {
             Bitmap bar = s.bar.snapshot();
             if (bar != null) barView.setImageBitmap(bar);
 
-            boolean rec = r.recordingWanted() && r.encoding;
+            // The encoder keeps running while files cannot be opened, so do not call that recording.
+            boolean cannotSave = r.lastError.startsWith("无法写入存储");
+            boolean rec = r.recordingWanted() && r.encoding && !cannotSave;
             String modeText = r.mode == Recorder.Mode.DRIVE ? "行车" : r.mode == Recorder.Mode.PARKING ? "停车监控" : "停车事件";
             if (!r.recordingWanted()) state.setText("已暂停");
             else if (!r.sourceOk) state.setText("等待 360 画面");
+            else if (cannotSave) state.setText("无法保存录像");
             else state.setText("● 录制中 · " + modeText);
-            state.setTextColor(rec ? Ui.RED : Ui.SUB);
+            state.setTextColor(rec ? Ui.RED : cannotSave && r.recordingWanted() ? Ui.AMBER : Ui.SUB);
             badge.setText(rec ? "● REC  " + modeText : "未录制");
             badge.setBackground(Ui.round(rec ? Color.argb(200, 200, 30, 40) : Color.argb(160, 0, 0, 0), 10));
             file.setText(r.currentFile.isEmpty() ? " " : r.currentFile);
@@ -249,12 +287,50 @@ public final class MainActivity extends Activity {
             stats.setText(String.format(Locale.US, "360 画面  %.1f fps\n编码输出  %.1f fps\n视频格式  %s · %d Mbps\n存储占用  %s / %d GB\n剩余空间  %s",
                     r.sourceFps, r.encodedFps, s.config.hevc() ? "H.265" : "H.264", s.config.bitrateMbps(),
                     Ui.size(used), s.config.quotaGb(), Ui.size(Storage.freeBytes())));
-            error.setText(r.lastError);
+            boolean noStorage = r.lastError.startsWith("无法写入存储") && Permissions.storageMissing(this);
+            error.setText(noStorage ? "缺少存储权限，录像无法保存（见下方说明）" : r.lastError);
             toggle.setText(r.recordingWanted() ? "停止录制" : "开始录制");
             toggle.setBackground(Ui.round(r.recordingWanted() ? Ui.CARD2 : Ui.GREEN, 14));
             toggle.setTextColor(r.recordingWanted() ? Ui.RED : Ui.BG);
         }, 500);
         return row;
+    }
+
+    /** Lists missing permissions with what each breaks, a grant button and one-line adb commands. */
+    private void fillPermissionCard(LinearLayout card, String[] shown) {
+        List<Permissions.Missing> missing = Permissions.missing(this);
+        StringBuilder key = new StringBuilder();
+        for (Permissions.Missing m : missing) key.append(m.label).append(',');
+        if (key.toString().equals(shown[0])) return;
+        shown[0] = key.toString();
+        card.removeAllViews();
+        card.setVisibility(missing.isEmpty() ? View.GONE : View.VISIBLE);
+        if (missing.isEmpty()) return;
+        card.addView(Ui.text(this, "缺少权限，部分功能无法使用", 17, Ui.AMBER, true));
+        StringBuilder lines = new StringBuilder();
+        StringBuilder commands = new StringBuilder();
+        boolean anyRuntime = false;
+        for (Permissions.Missing m : missing) {
+            if (lines.length() > 0) lines.append('\n');
+            lines.append("· ").append(m.label).append("：").append(m.effect);
+            if (commands.length() > 0) commands.append('\n');
+            commands.append(m.command);
+            anyRuntime |= m.runtime;
+        }
+        TextView list = Ui.text(this, lines.toString(), 15, Ui.TEXT, false);
+        list.setLineSpacing(4, 1);
+        card.addView(list, Ui.margins(Ui.lp(-1, -2), 0, 8, 0, 0));
+        if (anyRuntime) {
+            TextView grant = Ui.button(this, "授予权限", Ui.AMBER, Ui.BG);
+            grant.setOnClickListener(v -> askPermissions());
+            card.addView(grant, Ui.margins(Ui.lp(-1, -2), 0, 14, 0, 0));
+        }
+        card.addView(Ui.text(this, anyRuntime ? "如果没有弹出授权窗口，请在电脑上用 adb 逐条执行：" : "请在电脑上用 adb 逐条执行：",
+                14, Ui.SUB, false), Ui.margins(Ui.lp(-1, -2), 0, 14, 0, 0));
+        TextView cmd = Ui.text(this, commands.toString(), 13, Ui.TEXT, false);
+        cmd.setTypeface(android.graphics.Typeface.MONOSPACE);
+        cmd.setLineSpacing(4, 1);
+        card.addView(cmd, Ui.margins(Ui.lp(-1, -2), 0, 6, 0, 0));
     }
 
     private long usedCache, usedAt;

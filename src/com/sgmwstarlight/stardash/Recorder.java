@@ -530,6 +530,8 @@ final class Recorder {
                     w = null;
                     continue;
                 }
+                // A file opened, so an earlier open failure (e.g. storage granted since) no longer applies.
+                if (lastError.startsWith("无法写入存储")) lastError = "";
                 currentFile = file.getName();
                 segmentStartMs = System.currentTimeMillis();
                 segStartWall = segmentStartMs;

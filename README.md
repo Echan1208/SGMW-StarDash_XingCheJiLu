@@ -235,6 +235,7 @@ export ZIG=/path/to/zig
     ├── Thumbs.java             回放缩略图
     ├── Config.java             设置项
     ├── CarCheck.java           检查是否为适配的车机，不匹配时在首页提示
+    ├── Permissions.java        检查缺少的权限，弹出授权窗口并在首页提示补授权方法
     ├── Native.java             native 方法声明
     └── Ui.java                 界面样式
 ```
