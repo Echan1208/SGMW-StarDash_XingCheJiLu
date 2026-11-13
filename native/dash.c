@@ -141,3 +141,118 @@ void Java_com_sgmwstarlight_stardash_Native_remap(Env env, void *cls, void *srcB
         yuvToRgba(m[(e & 2) ? 3 : 1], m[0], m[2], out);
     }
 }
+
+/* Bilinear look-up remap for undistorted floating views. idx: source pixel index (y*2560+x) of the
+ * top-left neighbour, or -1 for black. frac: two bytes per output pixel, x and y fractions in 1/256. */
+void Java_com_sgmwstarlight_stardash_Native_remapBilinear(Env env, void *cls, void *srcBuf, void *idxBuf, void *fracBuf,
+                                                          int count, void *outBuf) {
+    const unsigned char *src = ADDR(env, srcBuf);
+    const int *idx = (const int *)ADDR(env, idxBuf);
+    const unsigned char *frac = ADDR(env, fracBuf);
+    unsigned char *out = ADDR(env, outBuf);
+    for (int i = 0; i < count; i++, out += 4, frac += 2) {
+        int p = idx[i];
+        if (p < 0) {
+            out[0] = out[1] = out[2] = 0;
+            out[3] = 255;
+            continue;
+        }
+        int x = p % 2560, y = p / 2560;
+        const unsigned char *row0 = src + (long)y * SRC_STRIDE, *row1 = row0 + SRC_STRIDE;
+        int ax = frac[0], ay = frac[1];
+        /* In UYVY every pixel's luma sits at byte 2*x+1. */
+        int y00 = row0[2 * x + 1], y01 = row0[2 * x + 3], y10 = row1[2 * x + 1], y11 = row1[2 * x + 3];
+        int top = y00 * (256 - ax) + y01 * ax, bottom = y10 * (256 - ax) + y11 * ax;
+        int luma = (top * (256 - ay) + bottom * ay + 32768) >> 16;
+        const unsigned char *m = row0 + (x & ~1) * 2;
+        yuvToRgba(luma, m[0], m[2], out);
+    }
+}
+
+/* Same as remapBilinear, but first copies the source rectangle the view needs (x0,y0,bw,bh in
+ * mosaic pixels) into ordinary cached memory with sequential reads. The shared 360 buffer is
+ * uncached, so scattered reads from it are slow while one sequential copy is cheap.
+ * idx here is relative to the rectangle: (y-y0)*bw + (x-x0). */
+void Java_com_sgmwstarlight_stardash_Native_remapBilinearRegion(Env env, void *cls, void *srcBuf, void *idxBuf,
+                                                                void *fracBuf, int count, void *outBuf, int x0,
+                                                                int y0, int bw, int bh, void *cacheBuf) {
+    const unsigned char *src = ADDR(env, srcBuf);
+    const int *idx = (const int *)ADDR(env, idxBuf);
+    const unsigned char *frac = ADDR(env, fracBuf);
+    unsigned char *out = ADDR(env, outBuf);
+    unsigned char *cache = ADDR(env, cacheBuf);
+    int rowBytes = bw * 2;
+    for (int r = 0; r < bh; r++) {
+        const unsigned char *s = src + (long)(y0 + r) * SRC_STRIDE + x0 * 2;
+        unsigned char *d = cache + (long)r * rowBytes;
+        int i = 0;
+        for (; i + 64 <= rowBytes; i += 64) {
+            uint8x16x4_t v = vld1q_u8_x4(s + i);
+            vst1q_u8_x4(d + i, v);
+        }
+        for (; i < rowBytes; i++) d[i] = s[i];
+    }
+    for (int i = 0; i < count; i++, out += 4, frac += 2) {
+        int p = idx[i];
+        if (p < 0) {
+            out[0] = out[1] = out[2] = 0;
+            out[3] = 255;
+            continue;
+        }
+        int x = p % bw, y = p / bw;
+        const unsigned char *row0 = cache + (long)y * rowBytes, *row1 = row0 + rowBytes;
+        int ax = frac[0], ay = frac[1];
+        int y00 = row0[2 * x + 1], y01 = row0[2 * x + 3], y10 = row1[2 * x + 1], y11 = row1[2 * x + 3];
+        int top = y00 * (256 - ax) + y01 * ax, bottom = y10 * (256 - ax) + y11 * ax;
+        int luma = (top * (256 - ay) + bottom * ay + 32768) >> 16;
+        /* chroma pair belongs to the even pixel of the absolute x (x0 is kept even) */
+        const unsigned char *m = row0 + (x & ~1) * 2;
+        yuvToRgba(luma, m[0], m[2], out);
+    }
+}
+
+/* Fastest variant: idx holds the byte offset of the top-left neighbour inside the copied block
+ * ((y-y0)*rowBytes + (x-x0)*2) with bit 0 set when x is odd (so the chroma pair starts 2 bytes earlier).
+ * No divisions per pixel. */
+static inline unsigned long ticks(void) {
+    unsigned long t;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
+    return t;
+}
+
+/* Returns the time spent copying the block, in timer ticks (19.2 MHz on this SoC). */
+int Java_com_sgmwstarlight_stardash_Native_remapOffsets(Env env, void *cls, void *srcBuf, void *idxBuf, void *fracBuf,
+                                                         int count, void *outBuf, int x0, int y0, int bw, int bh,
+                                                         void *cacheBuf) {
+    const unsigned char *src = ADDR(env, srcBuf);
+    const int *idx = (const int *)ADDR(env, idxBuf);
+    const unsigned char *frac = ADDR(env, fracBuf);
+    unsigned char *out = ADDR(env, outBuf);
+    unsigned char *cache = ADDR(env, cacheBuf);
+    int rowBytes = bw * 2;
+    unsigned long c0 = ticks();
+    for (int r = 0; r < bh; r++) {
+        const unsigned char *s = src + (long)(y0 + r) * SRC_STRIDE + x0 * 2;
+        unsigned char *d = cache + (long)r * rowBytes;
+        int i = 0;
+        for (; i + 64 <= rowBytes; i += 64) vst1q_u8_x4(d + i, vld1q_u8_x4(s + i));
+        for (; i < rowBytes; i++) d[i] = s[i];
+    }
+    unsigned long c1 = ticks();
+    for (int i = 0; i < count; i++, out += 4, frac += 2) {
+        int e = idx[i];
+        if (e < 0) {
+            out[0] = out[1] = out[2] = 0;
+            out[3] = 255;
+            continue;
+        }
+        const unsigned char *p = cache + (e & ~1);
+        int ax = frac[0], ay = frac[1];
+        int top = p[1] * (256 - ax) + p[3] * ax;
+        int bottom = p[rowBytes + 1] * (256 - ax) + p[rowBytes + 3] * ax;
+        int luma = (top * (256 - ay) + bottom * ay + 32768) >> 16;
+        const unsigned char *m = p - ((e & 1) << 1);
+        yuvToRgba(luma, m[0], m[2], out);
+    }
+    return (int)(c1 - c0);
+}

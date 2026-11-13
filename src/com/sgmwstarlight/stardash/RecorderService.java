@@ -19,6 +19,7 @@ public final class RecorderService extends Service {
     static final String ACTION_START = "com.sgmwstarlight.stardash.START";
     static final String ACTION_STOP = "com.sgmwstarlight.stardash.STOP";
     static final String ACTION_KEEPALIVE = "com.sgmwstarlight.stardash.KEEPALIVE";
+    static final String ACTION_PREVIEW = "com.sgmwstarlight.stardash.PREVIEW";
     static volatile RecorderService instance;
 
     Config config;
@@ -163,6 +164,16 @@ public final class RecorderService extends Service {
         String action = intent == null ? null : intent.getAction();
         if (ACTION_START.equals(action)) setRecording(true);
         else if (ACTION_STOP.equals(action)) setRecording(false);
+        else if (ACTION_PREVIEW.equals(action) && intent != null) {
+            // adb shell am startservice -n com.sgmwstarlight.stardash/.RecorderService
+            //     -a com.sgmwstarlight.stardash.PREVIEW --es side LEFT --ei seconds 20
+            String side = intent.getStringExtra("side");
+            int seconds = intent.getIntExtra("seconds", 5);
+            try {
+                mirror.preview(MirrorController.Side.valueOf(side == null ? "LEFT" : side), seconds * 1000L);
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
         return START_STICKY;
     }
 

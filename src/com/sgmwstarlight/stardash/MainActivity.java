@@ -31,6 +31,7 @@ import java.util.Locale;
 
 public final class MainActivity extends Activity {
     private static final boolean SHOW_SIGNALS = false;
+    private boolean carWarningShown;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private FrameLayout content;
     private final TextView[] nav = new TextView[SHOW_SIGNALS ? 4 : 3];
@@ -184,6 +185,24 @@ public final class MainActivity extends Activity {
         TextView hint = Ui.text(this, "锁定后的片段不会被循环覆盖", 14, Ui.SUB, false);
         hint.setGravity(Gravity.CENTER);
         right.addView(hint, Ui.margins(Ui.lp(-1, -2), 0, 8, 0, 0));
+
+        // Other head units: warn once per app launch, for 10 seconds.
+        if (!carWarningShown) {
+            carWarningShown = true;
+            TextView warn = Ui.text(this, "", 16, Ui.AMBER, true);
+            warn.setVisibility(View.GONE);
+            warn.setBackground(Ui.round(Color.argb(40, 255, 184, 0), 14));
+            warn.setPadding(22, 16, 22, 16);
+            right.addView(warn, Ui.margins(Ui.lp(-1, -2), 0, 20, 0, 0));
+            new Thread(() -> {
+                if (CarCheck.isSupported()) return;
+                handler.post(() -> {
+                    warn.setText("非2025款五菱星光车型，使用过程中可能会遇到错误或者无法录制的情况");
+                    warn.setVisibility(View.VISIBLE);
+                    handler.postDelayed(() -> warn.setVisibility(View.GONE), 10_000);
+                });
+            }).start();
+        }
         row.addView(right, Ui.margins(Ui.lp(0, -2, 1), 28, 0, 0, 0));
 
         toggle.setOnClickListener(v -> {

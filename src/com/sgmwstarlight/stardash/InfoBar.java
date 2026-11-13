@@ -68,7 +68,8 @@ final class InfoBar {
         // Speed stays as text.
         boolean speedKnown = v.known(VehicleState.SPEED);
         String speed = speedKnown ? String.valueOf(Math.round(v.speed())) : "--";
-        x = drawText(x, speed, 28, speedKnown ? WHITE : DIM) + 5;
+        // Numbers sit right-aligned in slots sized for three digits, so nothing after them moves.
+        x = drawSlot(x, "888", speed, 28, speedKnown ? WHITE : DIM) + 5;
         x = drawText(x, "km/h", 16, DIM) + 20;
 
         // Gear letter in a rounded box.
@@ -80,7 +81,7 @@ final class InfoBar {
         steering(x + 15, TEXT);
         x += 36;
         String angle = v.known(VehicleState.STEER) ? String.format(Locale.US, "%+.0f°", v.steer()) : "--";
-        x = drawText(x, angle, 21, TEXT) + 22;
+        x = drawSlot(x, "-888°", angle, 21, TEXT) + 22;
 
         // Brake pedal: red while pressed.
         pedal(x, 26, 22, v.brake() ? RED : DIM);
@@ -91,7 +92,7 @@ final class InfoBar {
         int accel = accelKnown ? Math.max(0, Math.min(100, Math.round(v.accel()))) : 0;
         pedal(x, 15, 28, accel > 0 ? GREEN : DIM);
         x += 15 + 8;
-        x = drawText(x, accelKnown ? accel + "%" : "--", 21, TEXT) + 22;
+        x = drawSlot(x, "100%", accelKnown ? accel + "%" : "--", 21, TEXT) + 22;
 
         // Electric parking brake (P) red when applied, AutoHold (A) green while holding.
         bracketBadge(x + 17, "P", v.epbApplied() ? RED : DIM);
@@ -130,6 +131,15 @@ final class InfoBar {
     }
 
     // ------------------------------------------------------------------ drawing helpers
+
+    /** Draws {@code s} right-aligned in a slot as wide as {@code widest}; returns the slot's right edge. */
+    private float drawSlot(float x, String widest, String s, float size, int color) {
+        text.setTextSize(size);
+        float slot = text.measureText(widest);
+        text.setColor(color);
+        canvas.drawText(s, x + slot - text.measureText(s), CY + size * 0.36f, text);
+        return x + slot;
+    }
 
     private float drawText(float x, String s, float size, int color) {
         text.setTextSize(size);

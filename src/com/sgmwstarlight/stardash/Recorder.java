@@ -57,6 +57,9 @@ final class Recorder {
     volatile String lastError = "";
     volatile ByteBuffer latestFrame;
     volatile long latestFrameAt;
+    /** Increments for every new 360 frame; floating views redraw when it changes. */
+    volatile long frameSeq;
+    private int fpsLogTick;
     private volatile boolean lockRequested;
 
     // Preview for the activity
@@ -156,6 +159,7 @@ final class Recorder {
             long nowMs = nowNs / 1_000_000;
             latestFrame = frame;
             latestFrameAt = nowMs;
+            frameSeq++;
             frames++;
 
             // ---- mode
@@ -279,6 +283,10 @@ final class Recorder {
             if (elapsed >= 2000) {
                 sourceFps = frames * 1000f / elapsed;
                 encodedFps = encoded * 1000f / elapsed;
+                if (++fpsLogTick % 5 == 0) {
+                    Log.i(TAG, String.format(java.util.Locale.US, "fps source %.1f encoded %.1f mode %s",
+                            sourceFps, encodedFps, mode));
+                }
                 frames = 0;
                 encoded = 0;
                 fpsWindowStart = SystemClock.elapsedRealtime();
