@@ -20,6 +20,10 @@ public final class RecorderService extends Service {
     static final String ACTION_STOP = "com.sgmwstarlight.stardash.STOP";
     static final String ACTION_KEEPALIVE = "com.sgmwstarlight.stardash.KEEPALIVE";
     static final String ACTION_PREVIEW = "com.sgmwstarlight.stardash.PREVIEW";
+    /** Debug: start a parking event as if motion had been seen (to test what reacts to events). */
+    static final String ACTION_TEST_EVENT = "com.sgmwstarlight.stardash.TEST_EVENT";
+    /** Debug: send an instrument cluster backlight request (value 1..11). */
+    static final String ACTION_IC_BACKLIGHT = "com.sgmwstarlight.stardash.IC_BACKLIGHT";
     static volatile RecorderService instance;
 
     Config config;
@@ -51,6 +55,7 @@ public final class RecorderService extends Service {
         config = new Config(this);
         vehicle = new VehicleState();
         vehicle.start(this);
+        restoreCluster(); // in case sentry mode ended without restoring (app killed)
         bar = new InfoBar();
         recorder = new Recorder(config, vehicle, bar);
         mirror = new MirrorController(this, config, vehicle, recorder);
@@ -159,6 +164,30 @@ public final class RecorderService extends Service {
         am.setRepeating(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 300_000, 300_000, pi);
     }
 
+    /** Cluster backlight level (status value 3..11) saved by sentry mode, restored when it ends. */
+    private static final String IC_SAVED = "sentryIcLevel";
+
+    /** Sentry: turns the instrument cluster down to its lowest level (it cannot be switched off). */
+    void dimCluster() {
+        int cur = vehicle.readInt(VehicleState.IC_BACKLIGHT_STATUS);
+        if (cur < 3 || cur > 11) {
+            Log.i("StarDash", "cluster backlight " + cur + ", already lowest or unknown");
+            return;
+        }
+        config.prefs().edit().putInt(IC_SAVED, cur).commit();
+        String err = vehicle.setInt(VehicleState.IC_BACKLIGHT_REQUEST, 2);
+        Log.i("StarDash", "cluster backlight " + cur + " -> 2" + (err == null ? "" : " failed: " + err));
+    }
+
+    /** Puts back the level saved by {@link #dimCluster()}, if any. */
+    void restoreCluster() {
+        int saved = config.prefs().getInt(IC_SAVED, -1);
+        if (saved < 3 || saved > 11) return;
+        String err = vehicle.setInt(VehicleState.IC_BACKLIGHT_REQUEST, saved);
+        if (err == null) config.prefs().edit().remove(IC_SAVED).commit();
+        Log.i("StarDash", "cluster backlight restored to " + saved + (err == null ? "" : " failed: " + err));
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? null : intent.getAction();
@@ -172,6 +201,19 @@ public final class RecorderService extends Service {
             try {
                 mirror.preview(MirrorController.Side.valueOf(side == null ? "LEFT" : side), seconds * 1000L);
             } catch (IllegalArgumentException ignored) {
+            }
+        } else if (ACTION_TEST_EVENT.equals(action)) {
+            // adb shell am startservice -n com.sgmwstarlight.stardash/.RecorderService
+            //     -a com.sgmwstarlight.stardash.TEST_EVENT   (parking monitoring must be running)
+            recorder.forceEvent = true;
+        } else if (ACTION_IC_BACKLIGHT.equals(action) && intent != null) {
+            // Debug, cluster backlight only: adb shell am startservice -n com.sgmwstarlight.stardash/.RecorderService
+            //     -a com.sgmwstarlight.stardash.IC_BACKLIGHT --ei value 1   (1 = dimming closed, 2..11 = level 1..10)
+            int v = intent.getIntExtra("value", -1);
+            if (v >= 1 && v <= 11) {
+                String err = vehicle.setInt(VehicleState.IC_BACKLIGHT_REQUEST, v);
+                Log.i("StarDash", "IC backlight request " + v + (err == null ? " sent" : " failed: " + err)
+                        + ", status now " + vehicle.readInt(VehicleState.IC_BACKLIGHT_STATUS));
             }
         }
         return START_STICKY;

@@ -64,6 +64,13 @@ final class Recorder {
 
     // Preview for the activity
     volatile boolean previewWanted;
+    /**
+     * Sentry mode (set while the sentry screen is open): parking monitoring with motion events starts as
+     * soon as the car is in P at standstill, without the usual delay and even if switched off in settings.
+     */
+    volatile boolean sentry;
+    /** Debug hook: the next motion check starts an event regardless of what it sees. */
+    volatile boolean forceEvent;
     private final ByteBuffer previewRgba = ByteBuffer.allocateDirect(640 * 480 * 4);
     private final Bitmap previewBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
     private volatile long previewVersion;
@@ -164,11 +171,13 @@ final class Recorder {
 
             // ---- mode
             Mode want = Mode.DRIVE;
-            boolean parkedNow = config.parking() && vehicle.known(VehicleState.GEAR) && vehicle.gear() == 10
-                    && vehicle.speed() < 1f;
+            boolean sentryNow = sentry;
+            boolean parkedNow = (config.parking() || sentryNow) && vehicle.known(VehicleState.GEAR)
+                    && vehicle.gear() == 10 && vehicle.speed() < 1f;
             if (parkedNow) {
                 if (parkedSinceMs < 0) parkedSinceMs = nowMs;
-                if (nowMs - parkedSinceMs >= config.parkDelaySec() * 1000L) want = Mode.PARKING;
+                long delayMs = sentryNow ? 0 : config.parkDelaySec() * 1000L;
+                if (nowMs - parkedSinceMs >= delayMs) want = Mode.PARKING;
             } else {
                 parkedSinceMs = -1;
             }
@@ -179,7 +188,7 @@ final class Recorder {
                     motionQuietSinceMs = -1;
                 }
                 // ---- motion detection, 10 times a second
-                if (config.motion() && nowNs - lastMotionNs >= 100_000_000L) {
+                if ((config.motion() || sentryNow) && nowNs - lastMotionNs >= 100_000_000L) {
                     lastMotionNs = nowNs;
                     // Darker scenes are noisier, so they need a larger per-sample change.
                     int r = Native.motion(frame.duplicate(), motionPrev, lastLuma < 30 ? 20 : 12, BLOCK_MIN_SAMPLES);
@@ -196,6 +205,11 @@ final class Recorder {
                     boolean warm = nowMs - parkingEnteredMs > 2000 && nowMs - eventEndMs > EVENT_COOLDOWN_MS;
                     if (mode != Mode.EVENT) {
                         motionHits = warm && moving >= start ? motionHits + 1 : 0;
+                        if (forceEvent) {
+                            forceEvent = false;
+                            motionHits = 3;
+                            Log.i(TAG, "motion event forced (debug)");
+                        }
                         if (motionHits >= 3) {
                             want = Mode.EVENT;
                             eventStartMs = nowMs;

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.sgmwstarlight.stardash"
-    android:versionCode="2"
-    android:versionName="0.1.1">
+    android:versionCode="3"
+    android:versionName="0.1.2">
 
     <!-- targetSdk 25 on purpose: TYPE_SYSTEM_ALERT windows sit above the SystemUI dock on this
          head unit, legacy storage lets us write /storage/emulated/0/StarDash, and the service may be
@@ -43,6 +43,25 @@
         <activity
             android:name=".PlayerActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".MirrorTuneActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".SentryInfoActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".SentryActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
 

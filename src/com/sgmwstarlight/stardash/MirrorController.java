@@ -107,6 +107,23 @@ final class MirrorController {
          */
         static ViewMap sideMirror(int quadrant, double cx, double cy, double f, double k1, double k2, double[][] r,
                                   int outward, double psi, double aIn, double aOut, double horizon, int w, int h) {
+            return sideMirror(quadrant, cx, cy, f, k1, k2, r, outward, psi, aIn, aOut, horizon, 0, 0, 0, w, h);
+        }
+
+        /**
+         * As above, with the user's adjustment from the custom view page: {@code panRight} turns the view
+         * toward the screen's right (degrees, the image plane turns with it so nothing gets stretched),
+         * {@code shiftUp} moves the window up (degrees, shift lens, so verticals stay vertical) and
+         * {@code rotCw} turns the picture clockwise around its centre (degrees), for cars whose 360
+         * calibration differs from the one the defaults were picked on.
+         */
+        static ViewMap sideMirror(int quadrant, double cx, double cy, double f, double k1, double k2, double[][] r,
+                                  int outward, double psi, double aIn, double aOut, double horizon,
+                                  double panRight, double shiftUp, double rotCw, int w, int h) {
+            // Screen right is the inner side on the left view (mirror image) and the outer side on the right view.
+            psi += outward * panRight;
+            aIn += outward * panRight;
+            aOut += outward * panRight;
             double p = Math.toRadians(psi);
             double[] fwd = {outward * Math.sin(p), 0, -Math.cos(p)};
             double[] right = normalize(cross(new double[]{0, 1, 0}, fwd));
@@ -117,14 +134,26 @@ final class MirrorController {
             // Left view runs outer edge to inner edge, right view inner to outer.
             double u0 = outward < 0 ? uOut - 0.5 * step : uIn + 0.5 * step;
             double du = outward < 0 ? -step : step;
+            horizon += Math.tan(Math.toRadians(shiftUp)) / (span * h / w);
             double v0 = -horizon * span * h / w + 0.5 * step;
-            return project(quadrant, cx, cy, f, k1, k2, r, fwd, out, down, u0, du, v0, step, w, h);
+            return project(quadrant, cx, cy, f, k1, k2, r, fwd, out, down, u0, du, v0, step, rotCw, w, h);
         }
 
-        /** Output pixel (x, y) looks along fwd + (u0 + x du) uAxis + (v0 + y dv) down. */
         private static ViewMap project(int quadrant, double cx, double cy, double f, double k1, double k2, double[][] r,
                                        double[] fwd, double[] uAxis, double[] down,
                                        double u0, double du, double v0, double dv, int w, int h) {
+            return project(quadrant, cx, cy, f, k1, k2, r, fwd, uAxis, down, u0, du, v0, dv, 0, w, h);
+        }
+
+        /**
+         * Output pixel (x, y) looks along fwd + (u0 + x' du) uAxis + (v0 + y' dv) down, where (x', y') is
+         * (x, y) turned about the image centre so the picture appears rotated clockwise by {@code rotCw} degrees.
+         */
+        private static ViewMap project(int quadrant, double cx, double cy, double f, double k1, double k2, double[][] r,
+                                       double[] fwd, double[] uAxis, double[] down,
+                                       double u0, double du, double v0, double dv, double rotCw, int w, int h) {
+            double cosR = Math.cos(Math.toRadians(rotCw)), sinR = Math.sin(Math.toRadians(rotCw));
+            double mx = (w - 1) / 2.0, my = (h - 1) / 2.0;
             ByteBuffer idxBuf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
             ByteBuffer frac = ByteBuffer.allocateDirect(w * h * 2);
             IntBuffer idx = idxBuf.asIntBuffer();
@@ -132,7 +161,8 @@ final class MirrorController {
             double maxTheta = Math.toRadians(100);
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) {
-                    double u = u0 + x * du, v = v0 + y * dv;
+                    double xr = mx + cosR * (x - mx) + sinR * (y - my), yr = my - sinR * (x - mx) + cosR * (y - my);
+                    double u = u0 + xr * du, v = v0 + yr * dv;
                     double[] ray = {fwd[0] + u * uAxis[0] + v * down[0], fwd[1] + u * uAxis[1] + v * down[1],
                             fwd[2] + u * uAxis[2] + v * down[2]};
                     // World ray -> camera coordinates (columns of r are the camera axes).
@@ -319,20 +349,30 @@ final class MirrorController {
     private ViewMap mapFor(Side side, float scale) {
         int w = Math.round(windowWidth(side, scale) * RENDER_SCALE) & ~1;
         int h = Math.round(windowHeight(side, scale) * RENDER_SCALE) & ~1;
-        switch (side) {
-            // Side views: level shift-lens door-mirror views; straight back sits about 15% in from the inner
-            // edge, so the body takes about that much of the width.
-            case LEFT:
-                return ViewMap.sideMirror(2, 623.536, 472.016, 328.326, 0.0921645, -0.0136198, LEFT_CAMERA_AXES,
-                        -1, SIDE_PSI, SIDE_IN, SIDE_OUT, SIDE_HORIZON, w, h);
-            case RIGHT:
-                return ViewMap.sideMirror(3, 687.566, 467.631, 335.879, 0.0594832, -0.0073995, RIGHT_CAMERA_AXES,
-                        1, SIDE_PSI, SIDE_IN, SIDE_OUT, SIDE_HORIZON, w, h);
-            default: // flat view straight back from the rear camera, mirrored like an interior mirror
-                return ViewMap.fisheye(1, 669.451, 479.000, 340.667, 0.0576043, -0.0070888, REAR_CAMERA_AXES,
-                        1, 0, 5, 100, w, h, true);
+        if (side == Side.REAR) { // flat view straight back from the rear camera, mirrored like an interior mirror
+            return ViewMap.fisheye(1, 669.451, 479.000, 340.667, 0.0576043, -0.0070888, REAR_CAMERA_AXES,
+                    1, 0, 5, 100, w, h, true);
         }
+        float[] t = config.sideTune(side.name());
+        return sideMap(side, t[0], t[1], t[2], w, h);
     }
+
+    /**
+     * Left or right door-mirror view: level shift-lens views where straight back sits about 15% in from
+     * the inner edge (so the body takes about that much of the width), plus the user's adjustment.
+     * The framing depends only on the aspect ratio, not on w and h themselves.
+     */
+    static ViewMap sideMap(Side side, double panRight, double shiftUp, double rotCw, int w, int h) {
+        if (side == Side.LEFT) {
+            return ViewMap.sideMirror(2, 623.536, 472.016, 328.326, 0.0921645, -0.0136198, LEFT_CAMERA_AXES,
+                    -1, SIDE_PSI, SIDE_IN, SIDE_OUT, SIDE_HORIZON, panRight, shiftUp, rotCw, w, h);
+        }
+        return ViewMap.sideMirror(3, 687.566, 467.631, 335.879, 0.0594832, -0.0073995, RIGHT_CAMERA_AXES,
+                1, SIDE_PSI, SIDE_IN, SIDE_OUT, SIDE_HORIZON, panRight, shiftUp, rotCw, w, h);
+    }
+
+    /** Side window aspect (width / height), shared with the custom view page so its preview matches. */
+    static final int SIDE_ASPECT_W = 480, SIDE_ASPECT_H = 360;
 
     private void show(Side side) {
         if (views[side.ordinal()] != null) return;

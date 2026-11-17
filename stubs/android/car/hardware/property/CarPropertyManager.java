@@ -14,6 +14,10 @@ public class CarPropertyManager {
         throw new RuntimeException("Stub!");
     }
 
+    public void setIntProperty(int prop, int areaId, int val) {
+        throw new RuntimeException("Stub!");
+    }
+
     public float getFloatProperty(int prop, int area) {
         throw new RuntimeException("Stub!");
     }

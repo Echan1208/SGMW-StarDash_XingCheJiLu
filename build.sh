@@ -27,7 +27,7 @@ rm -rf "$OUT/stubs" "$OUT/classes" "$OUT/dex" "$OUT/apk"
 mkdir -p "$OUT/stubs" "$OUT/classes" "$OUT/dex" "$OUT/apk/lib/arm64-v8a"
 
 ZIG_GLOBAL_CACHE_DIR="$OUT/zig-global" ZIG_LOCAL_CACHE_DIR="$OUT/zig-local" \
-    "$ZIG" cc -target aarch64-linux-android -O3 -fPIC -shared -nostdlib -ffreestanding -fno-stack-protector \
+    "$ZIG" cc -target aarch64-linux-android -O3 -fPIC -shared -nostdlib -ffreestanding -fno-stack-protector -g0 -s -ffile-prefix-map="$HERE"=. \
     -Wl,-soname,libstardash.so -Wl,-z,max-page-size=16384 \
     "$HERE/native/dash.c" -o "$OUT/apk/lib/arm64-v8a/libstardash.so"
 

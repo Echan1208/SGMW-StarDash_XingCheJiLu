@@ -207,6 +207,10 @@ public final class MainActivity extends Activity {
         hint.setGravity(Gravity.CENTER);
         right.addView(hint, Ui.margins(Ui.lp(-1, -2), 0, 8, 0, 0));
 
+        TextView sentry = Ui.button(this, "进入哨兵模式", Ui.CARD2, Ui.BLUE);
+        sentry.setOnClickListener(v -> startActivity(new Intent(this, SentryInfoActivity.class)));
+        right.addView(sentry, Ui.margins(Ui.lp(-1, -2), 0, 20, 0, 0));
+
         LinearLayout perms = new LinearLayout(this);
         perms.setOrientation(LinearLayout.VERTICAL);
         perms.setBackground(Ui.round(Color.argb(40, 255, 184, 0), 14));
@@ -581,7 +585,11 @@ public final class MainActivity extends Activity {
         stepRow(mir, "收回车速", "km/h", cfg.brakeHideKmh(), 0, 40, 5, v -> cfg.put("brakeHideKmh", v));
         choiceRow(mir, "画面大小", null, new String[]{"小", "中", "大"}, cfg.mirrorSize(), i -> cfg.put("mirrorSize", i));
         LinearLayout tests = new LinearLayout(this);
-        String[][] sides = {{"预览左后方", "LEFT"}, {"预览右后方", "RIGHT"}, {"预览后方", "REAR"}};
+        TextView tune = Ui.button(this, "自定义悬浮画面", Ui.CARD2, Ui.BLUE);
+        tune.setTextSize(17);
+        tune.setOnClickListener(v -> startActivity(new Intent(this, MirrorTuneActivity.class)));
+        tests.addView(tune, Ui.margins(Ui.lp(-2, -2), 0, 0, 14, 0));
+        String[][] sides ={{"预览左后方", "LEFT"}, {"预览右后方", "RIGHT"}, {"预览后方", "REAR"}};
         for (String[] sd : sides) {
             TextView b = Ui.button(this, sd[0], Ui.CARD2, Ui.TEXT);
             b.setTextSize(17);

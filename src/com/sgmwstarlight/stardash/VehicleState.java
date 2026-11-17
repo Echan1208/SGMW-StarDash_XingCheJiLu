@@ -9,8 +9,8 @@ import android.util.Log;
 import android.util.SparseArray;
 
 /**
- * Live vehicle signals from the head unit's VHAL (2025 Wuling Starlight). Read only; nothing is
- * ever written to the vehicle.
+ * Live vehicle signals from the head unit's VHAL (2025 Wuling Starlight). The only value ever
+ * written is the instrument cluster backlight level, which sentry mode lowers and then restores.
  */
 final class VehicleState {
     // Vendor property IDs of this head unit, in decimal.
@@ -93,6 +93,28 @@ final class VehicleState {
                     Log.w("StarDash", "initial read failed 0x" + Integer.toHexString(id) + " " + t);
                 }
             }
+        }
+    }
+
+    /** Instrument cluster backlight request (the stock settings write 2..11 for levels 1..10; 1 = "dimming closed"). */
+    static final int IC_BACKLIGHT_REQUEST = 557842971, IC_BACKLIGHT_STATUS = 557842601;
+
+    /** Writes an int property; returns null on success or the error text. */
+    String setInt(int id, int value) {
+        if (props == null) return "car service unavailable";
+        try {
+            props.setIntProperty(id, 0, value);
+            return null;
+        } catch (Throwable t) {
+            return t.toString();
+        }
+    }
+
+    int readInt(int id) {
+        try {
+            return props == null ? -1 : props.getIntProperty(id, 0);
+        } catch (Throwable t) {
+            return -1;
         }
     }
 

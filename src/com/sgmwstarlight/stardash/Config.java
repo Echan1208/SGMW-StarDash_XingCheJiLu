@@ -35,6 +35,17 @@ final class Config {
     int brakeHideKmh() { return p.getInt("brakeHideKmh", 10); }
     int mirrorSize() { return p.getInt("mirrorSize", 1); } // 0 small, 1 medium, 2 large
 
+    /** Custom view adjustment for side "LEFT" or "RIGHT": pan right, shift up, rotate clockwise (degrees). */
+    float[] sideTune(String side) {
+        return new float[]{p.getFloat("tune_" + side + "_pan", 0), p.getFloat("tune_" + side + "_up", 0),
+                p.getFloat("tune_" + side + "_rot", 0)};
+    }
+
+    void putSideTune(String side, float pan, float up, float rot) {
+        p.edit().putFloat("tune_" + side + "_pan", pan).putFloat("tune_" + side + "_up", up)
+                .putFloat("tune_" + side + "_rot", rot).apply();
+    }
+
     void put(String key, boolean v) { p.edit().putBoolean(key, v).apply(); }
     void put(String key, int v) { p.edit().putInt(key, v).apply(); }
 }
