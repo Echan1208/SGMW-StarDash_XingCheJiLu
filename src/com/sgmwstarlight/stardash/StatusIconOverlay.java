@@ -22,7 +22,9 @@ final class StatusIconOverlay {
     private static final String TAG = "StarDash";
     private static final String SYSTEMUI = "com.android.systemui";
     /** Centre of the slot left of the six right-hand status icons (they sit about 101 px apart). */
-    private static final int CENTER_X = 1113, SIZE = 56, TOP = 12;
+    private static final int CENTER_X = 1113, SIZE = 56, TOP = 12, SLOT = 101;
+    /** Extra status icons SystemUI shows in the right-hand group (the USB icon), each one slot wide. */
+    private int shift;
 
     enum State { HIDDEN, RECORDING, EVENT, ERROR }
 
@@ -63,7 +65,7 @@ final class StatusIconOverlay {
                             | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                     PixelFormat.TRANSLUCENT);
             lp.gravity = Gravity.TOP | Gravity.LEFT;
-            lp.x = CENTER_X - SIZE / 2;
+            lp.x = CENTER_X - SIZE / 2 - shift * SLOT;
             lp.y = TOP;
             lp.setTitle("StarDashStatusIcon");
             try {
@@ -78,6 +80,21 @@ final class StatusIconOverlay {
         view.setVisibility(statusBarVisible ? android.view.View.VISIBLE : android.view.View.INVISIBLE);
         ensureProbe();
         shown = state;
+    }
+
+    /** Moves the icon left by {@code slots} status icon slots. Main thread. */
+    void setShift(int slots) {
+        if (slots == shift) return;
+        shift = slots;
+        Log.i(TAG, "status icon shift " + slots);
+        if (view == null) return;
+        WindowManager.LayoutParams lp = (WindowManager.LayoutParams) view.getLayoutParams();
+        if (lp == null) return;
+        lp.x = CENTER_X - SIZE / 2 - shift * SLOT;
+        try {
+            wm.updateViewLayout(view, lp);
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private boolean statusBarVisible = true;

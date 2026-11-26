@@ -11,14 +11,18 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Folder layout under /storage/emulated/0/StarDash:
+ * Folder layout under /storage/emulated/0/StarDash, and the same under StarDash/ on a USB stick:
  * Drive/yyyyMMdd (1-minute driving segments), Parking/yyyyMMdd (time-lapse), Event (parking motion),
- * Locked (never pruned).
+ * Locked (never pruned). Recording always happens on the head unit; in USB mode finished clips move to
+ * the stick (see UsbStorage).
  */
 final class Storage {
     static final File ROOT = new File("/storage/emulated/0/StarDash");
     static final String DRIVE = "Drive", PARKING = "Parking", EVENT = "Event", LOCKED = "Locked";
     private static final long MIN_FREE = 2L << 30;
+    private static final File LOCAL_VOLUME = new File("/storage/emulated/0");
+    /** StarDash/ on the mounted USB stick, or null; set by UsbStorage.refresh. */
+    static volatile File usbRoot;
 
     enum Kind { DRIVE, PARKING, EVENT }
 
@@ -70,67 +74,117 @@ final class Storage {
         }
     }
 
-    /** Deletes the oldest unlocked clips until under quota and above the free-space floor. */
+    /** Prunes the head unit's own clips. */
     static void prune(long quotaBytes) {
-        List<Clip> clips = list(false);
+        prune(ROOT, quotaBytes, LOCAL_VOLUME, MIN_FREE);
+    }
+
+    /** Deletes the oldest unlocked clips under {@code root} until under quota and above the free-space floor. */
+    static synchronized void prune(File root, long quotaBytes, File volume, long minFree) {
+        List<Clip> clips = new ArrayList<>();
+        collect(new File(root, DRIVE), "DRIVE", clips);
+        collect(new File(root, PARKING), "PARKING", clips);
+        collect(new File(root, EVENT), "EVENT", clips);
         Collections.sort(clips, (a, b) -> Long.compare(a.time, b.time));
         long used = 0;
         for (Clip c : clips) used += c.file.length();
         int i = 0;
-        while (i < clips.size() && (used > quotaBytes || freeBytes() < MIN_FREE)) {
+        while (i < clips.size() && (used > quotaBytes || freeBytes(volume) < minFree)) {
             Clip c = clips.get(i++);
             long len = c.file.length();
-            if (c.file.delete()) {
-                used -= len;
-                File parent = c.file.getParentFile();
-                String[] left = parent == null ? null : parent.list();
-                if (left != null && left.length == 0 && !parent.equals(new File(ROOT, EVENT))) parent.delete();
-            }
+            if (delete(c.file)) used -= len;
         }
     }
 
-    static long freeBytes() {
+    /** Deletes a clip (on the head unit or the stick) and its folder once empty, except the top folders. */
+    static boolean delete(File f) {
+        boolean usb = onUsb(f);
+        boolean ok = usb ? UsbStorage.delete(f) : f.delete();
+        if (!ok) return false;
+        File parent = f.getParentFile();
+        if (parent != null && !parent.getName().equals(EVENT) && !parent.getName().equals(LOCKED)) {
+            if (usb) UsbStorage.removeEmptyDir(parent);
+            else {
+                String[] left = parent.list();
+                if (left != null && left.length == 0) parent.delete();
+            }
+        }
+        return true;
+    }
+
+    /** Removes a clip from the head unit once it is safely on the stick. */
+    static void deleteLocal(File f) {
+        delete(f);
+    }
+
+    static boolean onUsb(File f) {
+        File u = usbRoot;
+        return u != null && f.getPath().startsWith(u.getPath() + "/");
+    }
+
+    static long freeBytes(File volume) {
         try {
-            StatFs s = new StatFs("/storage/emulated/0");
-            return s.getAvailableBytes();
+            return new StatFs(volume.getPath()).getAvailableBytes();
         } catch (IllegalArgumentException e) {
             return Long.MAX_VALUE;
         }
     }
 
-    static long usedBytes() {
+    /** Bytes of clips under one root (locked ones included). */
+    static long usedBytes(File root) {
         long used = 0;
-        for (Clip c : list(true)) used += c.file.length();
+        List<File> files = new ArrayList<>();
+        walk(root, files, ".mp4");
+        for (File f : files) used += f.length();
         return used;
     }
 
-    /** All finished clips, newest first. */
+    static long freeBytes() {
+        return freeBytes(LOCAL_VOLUME);
+    }
+
+    /** Bytes of the head unit's own clips. */
+    static long usedBytes() {
+        return usedBytes(ROOT);
+    }
+
+    /** All finished clips on the head unit and the USB stick, newest first. */
     static List<Clip> list(boolean includeLocked) {
         List<Clip> out = new ArrayList<>();
-        collect(new File(ROOT, DRIVE), "DRIVE", out);
-        collect(new File(ROOT, PARKING), "PARKING", out);
-        collect(new File(ROOT, EVENT), "EVENT", out);
-        if (includeLocked) collect(new File(ROOT, LOCKED), "LOCKED", out);
+        File usb = usbRoot;
+        for (File root : usb == null ? new File[]{ROOT} : new File[]{ROOT, usb}) {
+            collect(new File(root, DRIVE), "DRIVE", out);
+            collect(new File(root, PARKING), "PARKING", out);
+            collect(new File(root, EVENT), "EVENT", out);
+            if (includeLocked) collect(new File(root, LOCKED), "LOCKED", out);
+        }
         Collections.sort(out, (a, b) -> Long.compare(b.time, a.time));
         return out;
     }
 
-    static File lock(File f) {
-        File dir = new File(ROOT, LOCKED);
-        dir.mkdirs();
-        File to = new File(dir, f.getName());
+    private static File rootOf(File f) {
+        return onUsb(f) ? usbRoot : ROOT;
+    }
+
+    private static File move(File f, File to) {
+        if (onUsb(f)) return UsbStorage.rename(f, to) ? to : null;
+        File dir = to.getParentFile();
+        if (dir != null) dir.mkdirs();
         return f.renameTo(to) ? to : null;
+    }
+
+    static File lock(File f) {
+        return move(f, new File(new File(rootOf(f), LOCKED), f.getName()));
     }
 
     static File unlock(File f) {
         long t = parseTime(f.getName(), f.lastModified());
         String day = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date(t));
         String name = f.getName();
-        File dir = name.contains("_E") ? new File(ROOT, EVENT)
-                : new File(new File(ROOT, name.contains("_P") ? PARKING : DRIVE), day);
-        dir.mkdirs();
-        File to = new File(dir, name);
-        return f.renameTo(to) ? to : null;
+        File root = rootOf(f);
+        File dir = name.contains("_E") ? new File(root, EVENT)
+                : new File(new File(root, name.contains("_P") ? PARKING : DRIVE), day);
+        return move(f, new File(dir, name));
     }
 
     private static void collect(File dir, String type, List<Clip> out) {

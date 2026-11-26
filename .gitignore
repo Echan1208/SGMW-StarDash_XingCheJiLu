@@ -1,5 +1,7 @@
 # Build output
 build/
+# Downloaded by build.sh
+third_party/
 *.apk
 *.idsig
 

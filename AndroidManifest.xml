@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.sgmwstarlight.stardash"
-    android:versionCode="3"
-    android:versionName="0.1.2">
+    android:versionCode="4"
+    android:versionName="0.1.3">
 
     <!-- targetSdk 25 on purpose: TYPE_SYSTEM_ALERT windows sit above the SystemUI dock on this
          head unit, legacy storage lets us write /storage/emulated/0/StarDash, and the service may be
@@ -18,6 +18,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Local socket to the head unit's own adbd (127.0.0.1:5557) for formatting the USB stick. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Granted with `appops set ... GET_USAGE_STATS allow`; tells when the home screen is in front. -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
 

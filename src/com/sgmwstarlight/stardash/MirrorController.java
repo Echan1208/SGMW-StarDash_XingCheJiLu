@@ -4,10 +4,12 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.os.Handler;
 import android.os.Looper;
@@ -121,6 +123,14 @@ final class MirrorController {
                                   int outward, double psi, double aIn, double aOut, double horizon,
                                   double panRight, double shiftUp, double rotCw, int w, int h) {
             // Screen right is the inner side on the left view (mirror image) and the outer side on the right view.
+            Rays rays = sideRays(outward, psi, aIn, aOut, horizon, panRight, shiftUp, rotCw, w, h);
+            return project(quadrant, cx, cy, f, k1, k2, r, rays.fwd, rays.uAxis, rays.down, rays.u0, rays.du,
+                    rays.v0, rays.dv, rotCw, w, h);
+        }
+
+        /** The rays of a {@link #sideMirror} view (same arguments), for measuring where things stand. */
+        static Rays sideRays(int outward, double psi, double aIn, double aOut, double horizon,
+                             double panRight, double shiftUp, double rotCw, int w, int h) {
             psi += outward * panRight;
             aIn += outward * panRight;
             aOut += outward * panRight;
@@ -136,7 +146,7 @@ final class MirrorController {
             double du = outward < 0 ? -step : step;
             horizon += Math.tan(Math.toRadians(shiftUp)) / (span * h / w);
             double v0 = -horizon * span * h / w + 0.5 * step;
-            return project(quadrant, cx, cy, f, k1, k2, r, fwd, out, down, u0, du, v0, step, rotCw, w, h);
+            return new Rays(outward, fwd, out, down, u0, du, v0, step, rotCw, w, h);
         }
 
         private static ViewMap project(int quadrant, double cx, double cy, double f, double k1, double k2, double[][] r,
@@ -218,11 +228,11 @@ final class MirrorController {
             return vm;
         }
 
-        private static double[] cross(double[] a, double[] b) {
+        static double[] cross(double[] a, double[] b) {
             return new double[]{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
         }
 
-        private static double[] normalize(double[] a) {
+        static double[] normalize(double[] a) {
             double n = Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
             return new double[]{a[0] / n, a[1] / n, a[2] / n};
         }
@@ -255,6 +265,8 @@ final class MirrorController {
     private long sideOffSinceMs = -1;
     private volatile boolean rendering;
     private Thread renderThread;
+    /** Side-rear warning; runs only while a left or right view is up. */
+    final BlindSpot blindSpot;
 
     MirrorController(Context context, Config config, VehicleState vehicle, Recorder recorder) {
         this.context = context;
@@ -262,6 +274,12 @@ final class MirrorController {
         this.vehicle = vehicle;
         this.recorder = recorder;
         this.wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        this.blindSpot = new BlindSpot(context, config, vehicle, recorder, this);
+    }
+
+    /** Whether the view for {@code side} is on screen (any thread). */
+    boolean showing(Side side) {
+        return views[side.ordinal()] != null;
     }
 
     private final Runnable tick = new Runnable() {
@@ -302,12 +320,95 @@ final class MirrorController {
         hide(side);
     }
 
+    /** Exit warning: driver, passenger, rear left, rear right door signals and the view side for each. */
+    private static final int[] DOOR_UNLOCKED = {VehicleState.DRV_UNLOCKED, VehicleState.PAS_UNLOCKED,
+            VehicleState.RL_UNLOCKED, VehicleState.RR_UNLOCKED};
+    private static final int[] DOOR_AJAR = {VehicleState.DRV_AJAR, VehicleState.PAS_AJAR, VehicleState.RL_AJAR,
+            VehicleState.RR_AJAR};
+    private static final Side[] DOOR_SIDE = {Side.LEFT, Side.RIGHT, Side.LEFT, Side.RIGHT};
+    private static final long DOOR_SHOW_MS = 5000;
+    private final boolean[] doorUnlocked = new boolean[4], doorAjar = new boolean[4];
+    private boolean doorsSeen;
+    /** Until when the exit warning holds each side's view up (0 = not holding). */
+    private final long[] doorUntil = new long[Side.values().length];
+
+    /**
+     * Unlocks seen since {@link #pendingSince}: they are collected for a moment and then judged together,
+     * because the four door signals of one unlock may arrive a tick apart.
+     */
+    private long pendingSince;
+    private boolean pendingDriver, pendingGroup;
+    private static final long UNLOCK_WINDOW_MS = 300;
+
+    /**
+     * Exit warning ("开门杀"): at standstill, the first pull of an inner door handle unlocks without opening.
+     * Show the view on that side for 5 s so the side-rear check runs before the door opens; take it down as
+     * soon as the door actually opens, or after the 5 s.
+     * What unlocks together tells what happened (all checked on the car):
+     * - driver handle: only the driver door → left view;
+     * - passenger handle or either rear handle: the same three doors (passenger, rear left, rear right), so
+     *   which one was pulled cannot be told apart. With someone in the passenger seat it is taken as the
+     *   passenger getting out → right view only; with the seat empty it must be a rear passenger → both;
+     * - the unlock button or key: all four at once, including the driver door → no warning (the user
+     *   unlocking on purpose, not someone about to open a door).
+     */
+    private void doors(long now) {
+        boolean stopped = vehicle.known(VehicleState.SPEED) && vehicle.speed() < 0.5f;
+        for (int i = 0; i < 4; i++) {
+            boolean unlocked = vehicle.on(DOOR_UNLOCKED[i]), ajar = vehicle.on(DOOR_AJAR[i]);
+            Side side = DOOR_SIDE[i];
+            if (doorsSeen && unlocked && !doorUnlocked[i] && !ajar && stopped && config.doorWarn()) {
+                if (pendingSince == 0) pendingSince = now;
+                if (i == 0) pendingDriver = true;
+                else pendingGroup = true;
+            }
+            if (doorsSeen && ajar && !doorAjar[i] && doorUntil[side.ordinal()] > 0) {
+                Log.i(TAG, "door " + i + " opened: exit warning " + side + " ends");
+                doorUntil[side.ordinal()] = 0;
+                previewUntil[side.ordinal()] = 0;
+                hide(side);
+            }
+            doorUnlocked[i] = unlocked;
+            doorAjar[i] = ajar;
+        }
+        doorsSeen = true;
+        if (pendingSince > 0 && now - pendingSince >= UNLOCK_WINDOW_MS) {
+            if (pendingDriver && pendingGroup) {
+                Log.i(TAG, "all four doors unlocked together (unlock button or key): no exit warning");
+            } else if (pendingDriver) {
+                Log.i(TAG, "driver door unlocked at standstill: exit warning LEFT");
+                exitWarning(Side.LEFT, now);
+            } else {
+                boolean passenger = vehicle.on(VehicleState.PAS_SEATED);
+                Log.i(TAG, "passenger/rear doors unlocked at standstill, passenger seat "
+                        + (passenger ? "taken: exit warning RIGHT" : "empty: exit warning LEFT + RIGHT"));
+                exitWarning(Side.RIGHT, now);
+                if (!passenger) exitWarning(Side.LEFT, now);
+            }
+            pendingSince = 0;
+            pendingDriver = pendingGroup = false;
+        }
+        for (Side side : new Side[]{Side.LEFT, Side.RIGHT}) {
+            long until = doorUntil[side.ordinal()];
+            if (until == 0 || now < until) continue;
+            doorUntil[side.ordinal()] = 0;
+            boolean signal = config.ruleTurn() && (side == Side.LEFT ? vehicle.leftTurn() : vehicle.rightTurn());
+            if (!signal) ruleHide(side);
+        }
+    }
+
+    private void exitWarning(Side side, long now) {
+        doorUntil[side.ordinal()] = now + DOOR_SHOW_MS;
+        preview(side, DOOR_SHOW_MS);
+    }
+
     private void evaluate() {
         if (!config.mirror() || !vehicle.known(VehicleState.GEAR)) {
             for (Side s : Side.values()) ruleHide(s);
             return;
         }
         long now = SystemClock.elapsedRealtime();
+        doors(now);
         if (config.ruleTurn()) {
             boolean left = vehicle.leftTurn(), right = vehicle.rightTurn();
             if (left && !right) {
@@ -338,12 +439,32 @@ final class MirrorController {
     /** The flat image is computed at this fraction of the window size and scaled up by the GPU (saves ~40 % CPU). */
     private static final float RENDER_SCALE = 0.75f;
 
-    private static int windowWidth(Side side, float scale) {
+    /** Window scale for size 0 small, 1 medium, 2 large. */
+    static final float[] SIZE_SCALES = {0.75f, 1f, 1.3f};
+
+    static int windowWidth(Side side, float scale) {
         return Math.round((side == Side.REAR ? 640 : 480) * scale) & ~1;
     }
 
-    private static int windowHeight(Side side, float scale) {
+    static int windowHeight(Side side, float scale) {
         return Math.round(360 * scale) & ~1;
+    }
+
+    static int sizeOf(Config config, Side side) {
+        int s = side == Side.REAR ? config.mirrorSize() : config.sideSize(side.name());
+        return Math.max(0, Math.min(2, s));
+    }
+
+    /** Where a side view sits when the user has not moved it: left edge beside the side bar, or the right edge. */
+    static int[] defaultPos(Side side, int winW) {
+        return new int[]{side == Side.LEFT ? LEFT_X : SCREEN_W - EDGE - winW, TOP_Y};
+    }
+
+    /** Top-left of a side view of this size: the saved spot, kept fully on screen, or the default. */
+    static int[] sidePos(Config config, Side side, int winW, int winH) {
+        int[] p = config.sidePos(side.name());
+        if (p[0] < 0 || p[1] < 0) return defaultPos(side, winW);
+        return new int[]{Math.max(0, Math.min(SCREEN_W - winW, p[0])), Math.max(0, Math.min(SCREEN_H - winH, p[1]))};
     }
 
     private ViewMap mapFor(Side side, float scale) {
@@ -371,22 +492,78 @@ final class MirrorController {
                 1, SIDE_PSI, SIDE_IN, SIDE_OUT, SIDE_HORIZON, panRight, shiftUp, rotCw, w, h);
     }
 
+    /** The rays behind a side view of this size, matching {@link #sideMap} with the same adjustment. */
+    static Rays sideRays(Side side, double panRight, double shiftUp, double rotCw, int w, int h) {
+        return ViewMap.sideRays(side == Side.LEFT ? -1 : 1, SIDE_PSI, SIDE_IN, SIDE_OUT, SIDE_HORIZON,
+                panRight, shiftUp, rotCw, w, h);
+    }
+
+    /**
+     * The viewing ray of every pixel of a view, in vehicle coordinates (X right, Y up, Z front, from the
+     * camera), so a pixel can be put on the ground: the side cameras sit about 1 m above it (measured; the
+     * floor line of a wall 3.8 m behind the cameras comes out at 3.76-3.91 m).
+     */
+    static final class Rays {
+        final int outward;
+        final double[] fwd, uAxis, down;
+        final double u0, du, v0, dv;
+        private final double cosR, sinR, mx, my;
+
+        Rays(int outward, double[] fwd, double[] uAxis, double[] down, double u0, double du, double v0, double dv,
+             double rotCw, int w, int h) {
+            this.outward = outward;
+            this.fwd = fwd;
+            this.uAxis = uAxis;
+            this.down = down;
+            this.u0 = u0;
+            this.du = du;
+            this.v0 = v0;
+            this.dv = dv;
+            cosR = Math.cos(Math.toRadians(rotCw));
+            sinR = Math.sin(Math.toRadians(rotCw));
+            mx = (w - 1) / 2.0;
+            my = (h - 1) / 2.0;
+        }
+
+        /**
+         * Where pixel (x, y) meets the ground {@code height} m below the camera: {metres behind the camera,
+         * metres out from it to the side}, or null when the pixel is at or above the horizon.
+         */
+        double[] ground(double x, double y, double height) {
+            double xr = mx + cosR * (x - mx) + sinR * (y - my), yr = my - sinR * (x - mx) + cosR * (y - my);
+            double u = u0 + xr * du, v = v0 + yr * dv;
+            double rx = fwd[0] + u * uAxis[0] + v * down[0];
+            double ry = fwd[1] + u * uAxis[1] + v * down[1];
+            double rz = fwd[2] + u * uAxis[2] + v * down[2];
+            if (ry > -1e-4) return null;
+            double t = height / -ry;
+            return new double[]{-t * rz, outward * t * rx};
+        }
+    }
+
     /** Side window aspect (width / height), shared with the custom view page so its preview matches. */
     static final int SIDE_ASPECT_W = 480, SIDE_ASPECT_H = 360;
 
     private void show(Side side) {
         if (views[side.ordinal()] != null) return;
-        float scale = new float[]{0.75f, 1f, 1.3f}[Math.max(0, Math.min(2, config.mirrorSize()))];
+        float scale = SIZE_SCALES[sizeOf(config, side)];
         ViewMap map = mapFor(side, scale);
         int winW = windowWidth(side, scale), winH = windowHeight(side, scale);
-        MirrorView v = new MirrorView(context, map, side == Side.LEFT ? "左后方" : side == Side.RIGHT ? "右后方" : "后方", winW);
+        MirrorView v = new MirrorView(context, map, side == Side.LEFT ? "左后方" : side == Side.RIGHT ? "右后方" : "后方", winW,
+                side, blindSpot);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(winW, winH,
                 WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.LEFT;
-        lp.y = 96;
-        lp.x = side == Side.LEFT ? LEFT_X : side == Side.RIGHT ? SCREEN_W - EDGE - winW : 0;
+        if (side == Side.REAR) {
+            lp.x = 0; // placeRear() sets it
+            lp.y = TOP_Y;
+        } else {
+            int[] p = sidePos(config, side, winW, winH);
+            lp.x = p[0];
+            lp.y = p[1];
+        }
         lp.setTitle("StarDashMirror");
         v.setOnClickListener(x -> hide(side));
         try {
@@ -396,12 +573,19 @@ final class MirrorController {
             return;
         }
         views[side.ordinal()] = v;
+        if (side != Side.REAR) blindSpot.wake();
         Log.i(TAG, "mirror show " + side);
         placeRear();
         ensureRendering();
     }
 
-    private static final int SCREEN_W = 1920, LEFT_X = 104, EDGE = 16, GAP = 16;
+    static final int SCREEN_W = 1920, SCREEN_H = 1080, LEFT_X = 104, EDGE = 16, GAP = 16, TOP_Y = 96;
+
+    /** After the custom view page saves a new size or spot: shows the side view there for a few seconds. */
+    void reshow(Side side, long ms) {
+        hide(side);
+        preview(side, ms);
+    }
 
     /**
      * The rear view sits centred, but moves beside a side view that is showing at the same time
@@ -412,11 +596,19 @@ final class MirrorController {
         if (rear == null) return;
         int w = rear.winW;
         int x = (SCREEN_W + 88 - w) / 2;
-        MirrorView left = views[Side.LEFT.ordinal()], right = views[Side.RIGHT.ordinal()];
-        if (left != null) x = Math.max(x, LEFT_X + left.winW + GAP);
-        if (right != null) x = Math.min(x, SCREEN_W - EDGE - right.winW - GAP - w);
         WindowManager.LayoutParams lp = (WindowManager.LayoutParams) rear.getLayoutParams();
-        if (lp == null || lp.x == x) return;
+        if (lp == null) return;
+        // Side views can be moved anywhere; step aside only from one that shares the rear view's rows.
+        for (Side s : new Side[]{Side.LEFT, Side.RIGHT}) {
+            MirrorView v = views[s.ordinal()];
+            WindowManager.LayoutParams o = v == null ? null : (WindowManager.LayoutParams) v.getLayoutParams();
+            if (o == null || o.y >= lp.y + lp.height || o.y + o.height <= lp.y) continue;
+            boolean onLeft = o.x + o.width / 2 < SCREEN_W / 2;
+            if (onLeft) x = Math.max(x, o.x + o.width + GAP);
+            else x = Math.min(x, o.x - GAP - w);
+        }
+        x = Math.max(0, Math.min(SCREEN_W - w, x));
+        if (lp.x == x) return;
         lp.x = x;
         try {
             wm.updateViewLayout(rear, lp);
@@ -497,10 +689,17 @@ final class MirrorController {
 
         /** Window width on screen; the bitmap is smaller and is scaled up when drawn. */
         final int winW;
+        private final Side side;
+        private final BlindSpot bsd;
+        private final Paint glow = new Paint();
+        private Shader edge;
+        private int edgesW, edgesH;
 
-        MirrorView(Context c, ViewMap map, String label, int winW) {
+        MirrorView(Context c, ViewMap map, String label, int winW, Side side, BlindSpot bsd) {
             super(c);
             this.winW = winW;
+            this.side = side;
+            this.bsd = bsd;
             this.map = map;
             this.label = label;
             rgba = ByteBuffer.allocateDirect(map.w * map.h * 4);
@@ -551,6 +750,30 @@ final class MirrorController {
             // Side labels sit over the dark blind corner next to the car: left view top-right, others top-left.
             float x = "左后方".equals(label) ? getWidth() - 14 - text.measureText(label) : 14;
             canvas.drawText(label, x, 30, text);
+            BlindSpot.State st = bsd == null ? BlindSpot.State.NONE : bsd.state(side);
+            if (st.alert) drawWarning(canvas, st);
+        }
+
+        /**
+         * The side-rear warning: only the view's outer edge (left edge of the left view, right edge of the
+         * right view) glows red, fading inward and pulsing about three times a second.
+         */
+        private void drawWarning(Canvas canvas, BlindSpot.State st) {
+            int w = getWidth(), h = getHeight();
+            int band = Math.max(28, w / 6);
+            boolean leftEdge = side == Side.LEFT;
+            if (edge == null || edgesW != w || edgesH != h) {
+                int red = Color.argb(255, 255, 30, 20), none = Color.argb(0, 255, 30, 20);
+                edge = leftEdge ? new LinearGradient(0, 0, band, 0, red, none, Shader.TileMode.CLAMP)
+                        : new LinearGradient(w, 0, w - band, 0, red, none, Shader.TileMode.CLAMP);
+                edgesW = w;
+                edgesH = h;
+            }
+            double phase = (SystemClock.elapsedRealtime() % 330) / 330.0;
+            glow.setAlpha((int) (90 + 165 * (0.5 + 0.5 * Math.cos(2 * Math.PI * phase))));
+            glow.setShader(edge);
+            if (leftEdge) canvas.drawRect(0, 0, band, h, glow);
+            else canvas.drawRect(w - band, 0, w, h, glow);
         }
     }
 }

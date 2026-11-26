@@ -83,7 +83,18 @@ public final class MainActivity extends Activity {
         super.onResume();
         if (!permissionsAsked) {
             permissionsAsked = true;
-            askPermissions();
+            // Try the head unit's own adb first; show the system dialog only for what is still missing.
+            new Thread(() -> {
+                Permissions.autoGrant(getApplicationContext());
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    askPermissions();
+                    if (page == 0) {
+                        page = -1;
+                        show(0);
+                    }
+                });
+            }, "AutoGrant").start();
         }
         if (page >= 0) {
             int p = page;
@@ -172,8 +183,9 @@ public final class MainActivity extends Activity {
         frame.addView(preview, new FrameLayout.LayoutParams(-1, -1));
         TextView badge = Ui.text(this, "", 17, Color.WHITE, true);
         badge.setPadding(18, 8, 18, 8);
-        FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT);
-        blp.setMargins(18, 18, 0, 0);
+        // Top right, so it does not cover the camera tags in the top-left corner of each view.
+        FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
+        blp.setMargins(0, 18, 18, 0);
         frame.addView(badge, blp);
         left.addView(frame, Ui.lp(1000, 750));
         ImageView barView = new ImageView(this);
@@ -288,9 +300,19 @@ public final class MainActivity extends Activity {
             progress.setMax(seg);
             progress.setProgress((int) Math.min(seg, secs));
             long used = cachedUsed();
-            stats.setText(String.format(Locale.US, "360 画面  %.1f fps\n编码输出  %.1f fps\n视频格式  %s · %d Mbps\n存储占用  %s / %d GB\n剩余空间  %s",
-                    r.sourceFps, r.encodedFps, s.config.hevc() ? "H.265" : "H.264", s.config.bitrateMbps(),
-                    Ui.size(used), s.config.quotaGb(), Ui.size(Storage.freeBytes())));
+            UsbStorage.Vol vol = usbVol;
+            String store;
+            if (!s.config.usbStorage()) {
+                store = String.format(Locale.US, "存储占用  %s / %d GB\n剩余空间  %s", Ui.size(used), s.config.quotaGb(),
+                        Ui.size(Storage.freeBytes()));
+            } else if (vol == null) {
+                store = "存储位置  U盘未插入，暂存本机\n本机剩余  " + Ui.size(Storage.freeBytes());
+            } else {
+                store = String.format(Locale.US, "U盘占用  %s / %d GB\nU盘剩余  %s", Ui.size(used),
+                        s.config.usbQuotaGb(vol.maxQuotaGb()), Ui.size(vol.free));
+            }
+            stats.setText(String.format(Locale.US, "360 画面  %.1f fps\n编码输出  %.1f fps\n视频格式  %s · %d Mbps\n%s",
+                    r.sourceFps, r.encodedFps, s.config.hevc() ? "H.265" : "H.264", s.config.bitrateMbps(), store));
             boolean noStorage = r.lastError.startsWith("无法写入存储") && Permissions.storageMissing(this);
             error.setText(noStorage ? "缺少存储权限，录像无法保存（见下方说明）" : r.lastError);
             toggle.setText(r.recordingWanted() ? "停止录制" : "开始录制");
@@ -337,13 +359,24 @@ public final class MainActivity extends Activity {
         card.addView(cmd, Ui.margins(Ui.lp(-1, -2), 0, 6, 0, 0));
     }
 
-    private long usedCache, usedAt;
+    private volatile long usedCache, usedAt;
+    /** The stick in USB mode (refreshed with the usage), or null. */
+    private volatile UsbStorage.Vol usbVol;
+    private boolean usedForUsb;
 
+    /** Storage used by clips: the head unit's, or in USB mode the stick's. Refreshed every 10 s. */
     private long cachedUsed() {
         long now = System.currentTimeMillis();
-        if (now - usedAt > 15000) {
+        RecorderService s = RecorderService.instance;
+        boolean usb = s != null && s.config.usbStorage();
+        if (now - usedAt > 10000 || usb != usedForUsb) {
             usedAt = now;
-            new Thread(() -> usedCache = Storage.usedBytes()).start();
+            usedForUsb = usb;
+            new Thread(() -> {
+                UsbStorage.Vol v = usb ? UsbStorage.find(getApplicationContext()) : null;
+                usbVol = v;
+                usedCache = !usb ? Storage.usedBytes() : v == null ? 0 : Storage.usedBytes(v.root());
+            }).start();
         }
         return usedCache;
     }
@@ -414,7 +447,7 @@ public final class MainActivity extends Activity {
                         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                                 .setMessage("删除后无法恢复，确定删除这个片段吗？")
                                 .setPositiveButton("删除", (d2, w2) -> {
-                                    clip.file.delete();
+                                    Storage.delete(clip.file);
                                     adapter.load();
                                 })
                                 .setNegativeButton("取消", null).show();
@@ -539,8 +572,11 @@ public final class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ settings
 
+    private ScrollView settingsScroll;
+
     private View settingsPage() {
         ScrollView scroll = new ScrollView(this);
+        settingsScroll = scroll;
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         scroll.addView(col);
@@ -567,8 +603,9 @@ public final class MainActivity extends Activity {
             cfg.put("infoBar", v);
             restart.run();
         });
-        stepRow(rec, "存储配额", "GB，超出后自动删除最旧的未锁定片段", cfg.quotaGb(), 8, 64, 4, v -> cfg.put("quotaGb", v));
-        rec.addView(Ui.text(this, "行车每 1 分钟一段，存放在 内部存储/StarDash", 14, Ui.SUB, false), Ui.margins(Ui.lp(-1, -2), 0, 12, 0, 0));
+        switchRow(rec, "烧录摄像头位置", "四路画面左上角标出前、后、左、右，并录进视频", cfg.camLabels(),
+                v -> cfg.put("camLabels", v));
+        storageRows(rec, cfg);
 
         LinearLayout park = section(col, "停车监控");
         switchRow(park, "启用停车监控", "挂 P 挡一段时间后转为缩时录影 + 画面变动录制", cfg.parking(), v -> cfg.put("parking", v));
@@ -583,7 +620,12 @@ public final class MainActivity extends Activity {
         switchRow(mir, "高速刹车显示后方", "车速高于阈值且踩刹车时显示；松开刹车或低于收回车速时收回", cfg.ruleBrake(), v -> cfg.put("ruleBrake", v));
         stepRow(mir, "显示车速", "km/h", cfg.brakeShowKmh(), 40, 130, 5, v -> cfg.put("brakeShowKmh", v));
         stepRow(mir, "收回车速", "km/h", cfg.brakeHideKmh(), 0, 40, 5, v -> cfg.put("brakeHideKmh", v));
-        choiceRow(mir, "画面大小", null, new String[]{"小", "中", "大"}, cfg.mirrorSize(), i -> cfg.put("mirrorSize", i));
+        switchRow(mir, "侧后方来车预警", "左右画面弹出时，侧后方近处有行人、两轮车或车辆在移动靠近，画面外侧边闪红提醒", cfg.blindSpot(),
+                v -> cfg.put("blindSpot", v));
+        switchRow(mir, "开门预警", "停车后第一次拉内门把手（解锁）时弹出画面 5 秒检测后方来人来车：主驾弹左侧；副驾有人弹右侧，没人（后排）弹两侧；按键解锁不弹；开门后收回",
+                cfg.doorWarn(), v -> cfg.put("doorWarn", v));
+        switchRow(mir, "预警提示音", "左侧报警左边扬声器响，右侧同理；可放 内部存储/StarDash/alert.wav 替换提示音", cfg.blindSpotSound(),
+                v -> cfg.put("blindSpotSound", v));
         LinearLayout tests = new LinearLayout(this);
         TextView tune = Ui.button(this, "自定义悬浮画面", Ui.CARD2, Ui.BLUE);
         tune.setTextSize(17);
@@ -605,7 +647,107 @@ public final class MainActivity extends Activity {
     }
 
     interface IntSink { void set(int v); }
+    /** Like IntSink, but may refuse the choice (the chip then stays as it was). */
+    interface IntCheck { boolean accept(int v); }
     interface BoolSink { void set(boolean v); }
+
+    /** 存储位置 (head unit or USB stick), the stick's size with a format button, and the quota. */
+    private void storageRows(LinearLayout rec, Config cfg) {
+        boolean usb = cfg.usbStorage();
+        UsbStorage.Vol vol = usb ? UsbStorage.find(this) : null;
+        choiceRow(rec, "存储位置", usb ? "先在本机录完一段，再转存到U盘" : "录像保存在车机内部存储",
+                new String[]{"存储至本机", "存储至U盘"}, usb ? 1 : 0, (IntCheck) i -> {
+                    if (i == 0) {
+                        if (cfg.usbStorage()) {
+                            cfg.put("usbStorage", false);
+                            rebuildSettings();
+                        }
+                        return true;
+                    }
+                    if (cfg.usbStorage()) return true;
+                    UsbStorage.Vol v = UsbStorage.find(this);
+                    if (v == null) {
+                        // Stay on 存储至本机 and on this spot of the page.
+                        notice("未检测到U盘", "请插入U盘后再选择“存储至U盘”。");
+                        return false;
+                    }
+                    new Thread(() -> {
+                        boolean ok = UsbStorage.prepare(v);
+                        runOnUiThread(() -> {
+                            if (ok) {
+                                cfg.put("usbStorage", true);
+                                Storage.usbRoot = v.root();
+                            } else {
+                                notice("无法使用U盘", "无法在U盘上创建 StarDash 文件夹。");
+                            }
+                            rebuildSettings();
+                        });
+                    }).start();
+                    return true;
+                });
+        if (usb) {
+            LinearLayout row = rowBase(rec, "U盘", vol == null ? "未检测到外部存储，录像暂存在本机"
+                    : "总容量 " + Ui.size(vol.total) + " · 剩余 " + Ui.size(vol.free));
+            if (vol != null) {
+                TextView format = Ui.button(this, "格式化U盘", Ui.CARD2, Ui.RED);
+                format.setTextSize(17);
+                format.setPadding(26, 10, 26, 10);
+                format.setOnClickListener(v -> confirmFormat(vol));
+                row.addView(format);
+            }
+        }
+        if (usb && vol != null) {
+            int max = vol.maxQuotaGb();
+            stepRow(rec, "存储配额", "GB，最多 " + max + " GB（U盘容量减 1 GB），超出后自动删除最旧的未锁定片段",
+                    cfg.usbQuotaGb(max), 1, max, max <= 16 ? 1 : 4, v -> cfg.put("usbQuotaGb", v));
+        } else {
+            stepRow(rec, "存储配额", "GB，超出后自动删除最旧的未锁定片段", cfg.quotaGb(), 8, 64, 4, v -> cfg.put("quotaGb", v));
+        }
+        rec.addView(Ui.text(this, usb ? "行车每 1 分钟一段，录完后转存到 U盘/StarDash" : "行车每 1 分钟一段，存放在 内部存储/StarDash",
+                14, Ui.SUB, false), Ui.margins(Ui.lp(-1, -2), 0, 12, 0, 0));
+    }
+
+    private void confirmFormat(UsbStorage.Vol vol) {
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("格式化U盘")
+                .setMessage("将把U盘（" + Ui.size(vol.total) + "）格式化为 FAT32，U盘上的所有文件（包括已转存的录像）都会被清除且无法恢复。确定格式化吗？")
+                .setPositiveButton("格式化", (d, w) -> {
+                    AlertDialog wait = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                            .setMessage("正在格式化U盘，请勿拔出…")
+                            .setCancelable(false)
+                            .show();
+                    new Thread(() -> {
+                        String err = UsbStorage.format(getApplicationContext(), vol);
+                        runOnUiThread(() -> {
+                            wait.dismiss();
+                            notice(err == null ? "格式化完成" : "格式化失败", err == null ? "U盘已格式化为 FAT32，并已创建 StarDash 文件夹。" : err);
+                            rebuildSettings();
+                        });
+                    }).start();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** Rebuilds the settings page (rows appear or go) and keeps it scrolled where it was. */
+    private void rebuildSettings() {
+        if (page != 2 || isFinishing()) return;
+        int y = settingsScroll == null ? 0 : settingsScroll.getScrollY();
+        page = -1;
+        show(2);
+        ScrollView sv = settingsScroll;
+        if (sv != null) sv.post(() -> sv.scrollTo(0, y));
+    }
+
+    /** A message the user should not miss (a toast is easy to overlook while the page changes). */
+    private void notice(String title, String message) {
+        if (isFinishing()) return;
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton("知道了", null)
+                .show();
+    }
 
     private LinearLayout section(LinearLayout parent, String title) {
         parent.addView(Ui.text(this, title, 18, Ui.SUB, true), Ui.margins(Ui.lp(-1, -2), 8, parent.getChildCount() == 0 ? 0 : 28, 0, 12));
@@ -664,17 +806,24 @@ public final class MainActivity extends Activity {
     }
 
     private void choiceRow(LinearLayout card, String title, String sub, String[] options, int selected, IntSink sink) {
+        choiceRow(card, title, sub, options, selected, (IntCheck) i -> {
+            sink.set(i);
+            return true;
+        });
+    }
+
+    private void choiceRow(LinearLayout card, String title, String sub, String[] options, int selected, IntCheck check) {
         LinearLayout row = rowBase(card, title, sub);
         List<TextView> chips = new ArrayList<>();
         for (int i = 0; i < options.length; i++) {
             final int index = i;
             TextView c = Ui.chip(this, options[i], i == selected, Ui.GREEN);
             c.setOnClickListener(v -> {
+                if (!check.accept(index)) return;
                 for (int j = 0; j < chips.size(); j++) {
                     chips.get(j).setTextColor(j == index ? Ui.BG : Ui.SUB);
                     chips.get(j).setBackground(j == index ? Ui.round(Ui.GREEN, 12) : Ui.outline(Ui.LINE, 12));
                 }
-                sink.set(index);
             });
             chips.add(c);
             row.addView(c, Ui.margins(Ui.lp(-2, -2), 10, 0, 0, 0));

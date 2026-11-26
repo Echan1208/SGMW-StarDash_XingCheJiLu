@@ -28,11 +28,20 @@ final class VehicleState {
     static final int EPB = 557843178;        // 0x214002ea ELECTRIC_PARK_BRAKE_STATUS: 2 in P (applied), 1 while driving
     static final int LOW_BEAM = 557842627;   // 0x214000c3 LOW_BEAM_INDICATION_ON
     static final int HIGH_BEAM = 557842622;  // 0x214000be HIGH_BEAM_INDICATION_ON
+    // Doors. *_OPEN_SWITCH_ACTIVE turns 1 on the first pull of the inner handle,
+    // which only unlocks that door (the passenger handle unlocks the passenger and both rear doors);
+    // *_AJAR_SWITCH_ACTIVE turns 1 when the door actually opens on the second pull. DOOR_LOCK stays 1.
+    static final int DRV_UNLOCKED = 557842663, PAS_UNLOCKED = 557842661, RL_UNLOCKED = 557842659, RR_UNLOCKED = 557842657;
+    static final int DRV_AJAR = 557842664, PAS_AJAR = 557842662, RL_AJAR = 557842660, RR_AJAR = 557842658;
+    /** Front passenger seat sensor (seatbelt reminder): 1 = occupied. There are no rear seat sensors. */
+    static final int PAS_SEATED = 557842439;
 
     static final int[] IDS = {SPEED, GEAR, STEER, BRAKE, ACCEL, BRAKE_LIGHT, EPB, LEFT_TURN, RIGHT_TURN,
-            POSITION, LOW_BEAM, HIGH_BEAM};
+            POSITION, LOW_BEAM, HIGH_BEAM, DRV_UNLOCKED, PAS_UNLOCKED, RL_UNLOCKED, RR_UNLOCKED,
+            DRV_AJAR, PAS_AJAR, RL_AJAR, RR_AJAR, PAS_SEATED};
     static final String[] NAMES = {"车速", "档位", "方向盘角度", "刹车踏板", "油门开度", "刹车灯", "电子手刹",
-            "左转向灯", "右转向灯", "示廓灯", "近光灯", "远光灯"};
+            "左转向灯", "右转向灯", "示廓灯", "近光灯", "远光灯", "主驾门解锁", "副驾门解锁", "左后门解锁", "右后门解锁",
+            "主驾门打开", "副驾门打开", "左后门打开", "右后门打开", "副驾座椅有人"};
     // Brake lights can stay on about 1 s after the pedal is released without AutoHold.
     private static final long AVH_DEBOUNCE_MS = 1500;
     private long avhCandidateSinceMs = -1;
@@ -163,6 +172,8 @@ final class VehicleState {
         if (avhCandidateSinceMs < 0) avhCandidateSinceMs = now;
         return now - avhCandidateSinceMs >= AVH_DEBOUNCE_MS;
     }
+    /** A door switch signal (see DRV_UNLOCKED etc.); false while unknown. */
+    boolean on(int id) { return asInt(raw(id)) == 1; }
     boolean positionLight() { return asInt(raw(POSITION)) == 1; }
     boolean epbApplied() { return asInt(raw(EPB)) == 2; }
     boolean lowBeam() { return asInt(raw(LOW_BEAM)) == 1; }

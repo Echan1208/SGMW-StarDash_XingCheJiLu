@@ -1,10 +1,13 @@
 package com.sgmwstarlight.stardash;
 
 import android.Manifest;
+import android.app.AppOpsManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.pm.PermissionInfo;
+import android.os.Process;
 import android.provider.Settings;
+import android.util.Log;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -61,6 +64,32 @@ final class Permissions {
                     "adb shell appops set " + PKG + " SYSTEM_ALERT_WINDOW allow", false));
         }
         return out;
+    }
+
+    /**
+     * Grants what is missing through the head unit's own adb (see RootShell), so owners need no computer.
+     * Also allows usage access (home-screen icon tint), which the card does not list. Returns how many
+     * permissions are still missing afterwards. Blocking; call off the main thread.
+     */
+    static synchronized int autoGrant(Context c) {
+        List<Missing> list = missing(c);
+        StringBuilder cmd = new StringBuilder();
+        for (Missing m : list) {
+            cmd.append(m.command.replaceFirst("^adb shell ", "")).append("; ");
+        }
+        if (!usageAllowed(c)) cmd.append("appops set ").append(PKG).append(" GET_USAGE_STATS allow; ");
+        if (cmd.length() == 0) return 0;
+        RootShell.Result r = RootShell.run(cmd.toString(), 30);
+        int left = missing(c).size();
+        Log.i("StarDash", "auto grant (" + list.size() + " missing): " + (r.code == -1 ? r.out : "done")
+                + ", still missing " + left);
+        return left;
+    }
+
+    private static boolean usageAllowed(Context c) {
+        AppOpsManager ops = c.getSystemService(AppOpsManager.class);
+        return ops == null || ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(),
+                c.getPackageName()) == AppOpsManager.MODE_ALLOWED;
     }
 
     static boolean storageMissing(Context c) {

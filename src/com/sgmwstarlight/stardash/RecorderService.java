@@ -24,6 +24,10 @@ public final class RecorderService extends Service {
     static final String ACTION_TEST_EVENT = "com.sgmwstarlight.stardash.TEST_EVENT";
     /** Debug: send an instrument cluster backlight request (value 1..11). */
     static final String ACTION_IC_BACKLIGHT = "com.sgmwstarlight.stardash.IC_BACKLIGHT";
+    /** Debug: plays the side-rear warning sound on one side, to check the left and right speakers. */
+    static final String ACTION_BSD_SOUND = "com.sgmwstarlight.stardash.BSD_SOUND";
+    /** Debug: checks the root shell used for formatting the USB stick (read-only commands). */
+    static final String ACTION_ROOT_TEST = "com.sgmwstarlight.stardash.ROOT_TEST";
     static volatile RecorderService instance;
 
     Config config;
@@ -96,7 +100,11 @@ public final class RecorderService extends Service {
                         : iconState == DvrStatusBar.ABNORMAL ? StatusIconOverlay.State.ERROR
                         : StatusIconOverlay.State.RECORDING;
                 boolean checkFront = (tickCount++ % 4) == 0; // about once a second
+                if (checkFront) UsbStorage.refresh(RecorderService.this);
+                boolean usbIcon = UsbStorage.iconShown;
                 main.post(() -> {
+                    // SystemUI adds its USB icon to the right-hand group, which pushes the group one slot left.
+                    overlayIcon.setShift(usbIcon ? 1 : 0);
                     if (checkFront) {
                         boolean home = "com.sgmw.launcher".equals(foreground.poll());
                         int mode = wallpaper.mode();
@@ -109,6 +117,9 @@ public final class RecorderService extends Service {
         });
 
         new Thread(() -> {
+            // Permissions missing (e.g. installed without the README's grant step): fix them through
+            // the head unit's own adb before the first file is opened.
+            Permissions.autoGrant(this);
             Storage.recoverAll();
             recorder.setRecording(config.prefs().getBoolean("recordingOn", config.autoStart()));
             recorder.start();
@@ -206,6 +217,18 @@ public final class RecorderService extends Service {
             // adb shell am startservice -n com.sgmwstarlight.stardash/.RecorderService
             //     -a com.sgmwstarlight.stardash.TEST_EVENT   (parking monitoring must be running)
             recorder.forceEvent = true;
+        } else if (ACTION_BSD_SOUND.equals(action) && intent != null) {
+            // adb shell am startservice -n com.sgmwstarlight.stardash/.RecorderService
+            //     -a com.sgmwstarlight.stardash.BSD_SOUND --es side LEFT --ei seconds 3
+            String side = intent.getStringExtra("side");
+            int seconds = intent.getIntExtra("seconds", 3);
+            mirror.blindSpot.testSound("RIGHT".equals(side) ? MirrorController.Side.RIGHT : MirrorController.Side.LEFT,
+                    seconds * 1000L);
+        } else if (ACTION_ROOT_TEST.equals(action)) {
+            new Thread(() -> {
+                RootShell.Result r = RootShell.run("id -u; sm list-volumes public; ls /system/bin/newfs_msdos", 20);
+                Log.i("StarDash", "root test " + r.code + ": " + r.out.replace("\n", " | "));
+            }).start();
         } else if (ACTION_IC_BACKLIGHT.equals(action) && intent != null) {
             // Debug, cluster backlight only: adb shell am startservice -n com.sgmwstarlight.stardash/.RecorderService
             //     -a com.sgmwstarlight.stardash.IC_BACKLIGHT --ei value 1   (1 = dimming closed, 2..11 = level 1..10)

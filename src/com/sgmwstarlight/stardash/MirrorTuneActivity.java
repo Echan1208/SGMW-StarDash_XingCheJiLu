@@ -21,6 +21,7 @@ import android.view.Window;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.nio.ByteBuffer;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -45,6 +46,7 @@ public final class MirrorTuneActivity extends Activity {
     private float pan, up, rot;
 
     private PreviewView preview;
+    private PlaceBox placeBox;
     private TextView title, values, switchBtn;
     private volatile MirrorController.ViewMap map;
     /** Bumped on every change so an older, slower map build never replaces a newer one. */
@@ -90,7 +92,8 @@ public final class MirrorTuneActivity extends Activity {
         frame.addView(rotateButtons(), corner(Gravity.BOTTOM | Gravity.RIGHT));
         root.addView(frame, Ui.margins(Ui.lp(PREVIEW_W, PREVIEW_H), 0, 16, 0, 0));
 
-        TextView hint = Ui.text(this, "方向键移动视角，旋转键把地面调水平；调整会自动保存，下次弹出悬浮画面时生效", 15, Ui.SUB, false);
+        TextView hint = Ui.text(this, "方向键移动视角，旋转键把地面调水平；调整会自动保存，下次弹出悬浮画面时生效。"
+                + "“调整画面位置”可拖动悬浮画面的位置并选择大小", 15, Ui.SUB, false);
         root.addView(hint, Ui.margins(Ui.lp(-2, -2), 0, 12, 0, 0));
 
         LinearLayout bottom = new LinearLayout(this);
@@ -99,11 +102,14 @@ public final class MirrorTuneActivity extends Activity {
         switchBtn.setOnClickListener(v -> {
             setSide(side == MirrorController.Side.LEFT ? MirrorController.Side.RIGHT : MirrorController.Side.LEFT);
         });
+        TextView place = Ui.button(this, "调整画面位置", Ui.CARD2, Ui.BLUE);
+        place.setOnClickListener(v -> togglePlaceBox());
         TextView reset = Ui.button(this, "恢复默认", Ui.CARD2, Ui.AMBER);
         reset.setOnClickListener(v -> {
             pan = up = rot = 0;
             changed();
         });
+        bottom.addView(place, Ui.margins(Ui.lp(300, -2), 0, 0, 20, 0));
         bottom.addView(switchBtn, Ui.margins(Ui.lp(300, -2), 0, 0, 20, 0));
         bottom.addView(reset, Ui.lp(300, -2));
         root.addView(bottom, Ui.margins(Ui.lp(-2, -2), 0, 16, 0, 0));
@@ -192,7 +198,32 @@ public final class MirrorTuneActivity extends Activity {
         return Math.max(-max, Math.min(max, Math.round(v * 2) / 2f));
     }
 
+    /** Opens (or closes) the box for placing and sizing this side's floating view. */
+    private void togglePlaceBox() {
+        if (placeBox != null) {
+            placeBox.close();
+            return;
+        }
+        MirrorController.Side s = side;
+        PlaceBox box = new PlaceBox(this, config, s, new PlaceBox.Listener() {
+            @Override
+            public void onSaved() {
+                Toast.makeText(MirrorTuneActivity.this, "已保存，悬浮画面将显示在这里", Toast.LENGTH_SHORT).show();
+                RecorderService svc = RecorderService.instance;
+                if (svc != null) svc.mirror.reshow(s, 4000);
+            }
+
+            @Override
+            public void onClosed() {
+                placeBox = null;
+            }
+        });
+        if (box.open()) placeBox = box;
+        else Toast.makeText(this, "缺少悬浮窗权限，无法调整位置", Toast.LENGTH_LONG).show();
+    }
+
     private void setSide(MirrorController.Side s) {
+        if (placeBox != null) placeBox.close();
         side = s;
         float[] t = config.sideTune(s.name());
         pan = t[0];
@@ -248,6 +279,7 @@ public final class MirrorTuneActivity extends Activity {
         super.onPause();
         running = false;
         handler.removeCallbacksAndMessages(null);
+        if (placeBox != null) placeBox.close();
     }
 
     @Override
